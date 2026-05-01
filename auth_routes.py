@@ -11,8 +11,14 @@ import os
 auth = Blueprint('auth', __name__)
 
 def get_resend_credentials():
-    """Get Resend API credentials from Replit connector"""
+    """Get Resend API credentials from env vars or Replit connector."""
     try:
+        # Prefer standard environment variables so email works outside Replit.
+        env_api_key = (os.environ.get('RESEND_API_KEY') or '').strip()
+        env_from_email = (os.environ.get('RESEND_FROM_EMAIL') or '').strip()
+        if env_api_key:
+            return env_api_key, env_from_email or None
+
         hostname = os.environ.get('REPLIT_CONNECTORS_HOSTNAME')
         
         # Get authentication token
