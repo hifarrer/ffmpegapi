@@ -1952,33 +1952,42 @@ def download_readme():
 @app.route('/contact', methods=['GET', 'POST'])
 def contact():
     """Contact page with email sending functionality"""
+    turnstile_site_key = os.environ.get('TURNSTILE_SITE_KEY', '')
+
     if request.method == 'POST':
         try:
-            # Get form data
+            turnstile_token = request.form.get('cf-turnstile-response', '')
+            turnstile_secret = os.environ.get('TURNSTILE_SECRET_KEY', '')
+
+            if turnstile_secret:
+                verify_resp = requests.post(
+                    'https://challenges.cloudflare.com/turnstile/v0/siteverify',
+                    data={'secret': turnstile_secret, 'response': turnstile_token},
+                    timeout=10,
+                )
+                if not verify_resp.json().get('success'):
+                    flash('CAPTCHA verification failed. Please try again.', 'error')
+                    return render_template('contact.html', turnstile_site_key=turnstile_site_key)
+
             name = request.form.get('name', '').strip()
             email = request.form.get('email', '').strip()
             subject = request.form.get('subject', '').strip()
             message = request.form.get('message', '').strip()
             
-            # Validate form data
             if not all([name, email, subject, message]):
                 flash('All fields are required', 'error')
-                return render_template('contact.html')
+                return render_template('contact.html', turnstile_site_key=turnstile_site_key)
             
-            # Get Resend credentials
             api_key, from_email = get_resend_credentials()
             
             if not api_key:
                 flash('Email service is not configured. Please contact the administrator.', 'error')
-                return render_template('contact.html')
+                return render_template('contact.html', turnstile_site_key=turnstile_site_key)
             
-            # Use configured from_email or fallback
             sender_email = from_email if from_email else 'noreply@ffmpegapi.net'
             
-            # Initialize Resend client
             resend.api_key = api_key
             
-            # Prepare email content
             email_subject = f"Contact Form: {subject}"
             email_html = f"""
             <h2>New Contact Form Submission</h2>
@@ -1988,7 +1997,6 @@ def contact():
             <p>{message.replace(chr(10), '<br>')}</p>
             """
             
-            # Send email using Resend
             params = {
                 "from": sender_email,
                 "to": ["info@ffmpegapi.net"],
@@ -2006,10 +2014,9 @@ def contact():
         except Exception as e:
             logging.error(f"Error sending contact email: {str(e)}")
             flash('Sorry, there was an error sending your message. Please try again later.', 'error')
-            return render_template('contact.html')
+            return render_template('contact.html', turnstile_site_key=turnstile_site_key)
     
-    # GET request - show form
-    return render_template('contact.html')
+    return render_template('contact.html', turnstile_site_key=turnstile_site_key)
 
 @app.route('/api/merge_image_audio', methods=['POST'])
 @log_api_request
