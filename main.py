@@ -7735,8 +7735,11 @@ def cleanup_old_videos():
         logging.error("[CLEANUP] CRON_SECRET not configured")
         return jsonify({'error': 'Server misconfiguration'}), 500
 
+    token = request.args.get('secret', '')
     auth_header = request.headers.get('Authorization', '')
-    if not auth_header.startswith('Bearer ') or auth_header[7:] != cron_secret:
+    if auth_header.startswith('Bearer '):
+        token = auth_header[7:]
+    if token != cron_secret:
         return jsonify({'error': 'Unauthorized'}), 401
 
     data_path = '/data'
