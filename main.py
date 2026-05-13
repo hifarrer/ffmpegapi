@@ -7727,7 +7727,7 @@ def youtube_to_mp4():
         }), 500
 
 
-@app.route('/api/cleanup-old-videos', methods=['POST'])
+@app.route('/api/cleanup-old-videos', methods=['GET'])
 def cleanup_old_videos():
     """Cron endpoint to delete .mp4 files older than 2 months from the /data volume."""
     cron_secret = os.environ.get('CRON_SECRET', '').strip()
