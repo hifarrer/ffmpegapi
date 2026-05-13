@@ -7727,5 +7727,110 @@ def youtube_to_mp4():
         }), 500
 
 
+@app.route('/api/cleanup-old-videos', methods=['POST'])
+def cleanup_old_videos():
+    """Cron endpoint to delete .mp4 files older than 2 months from the /data volume."""
+    cron_secret = os.environ.get('CRON_SECRET', '').strip()
+    if not cron_secret:
+        logging.error("[CLEANUP] CRON_SECRET not configured")
+        return jsonify({'error': 'Server misconfiguration'}), 500
+
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer ') or auth_header[7:] != cron_secret:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    data_path = '/data'
+    cutoff = datetime.now() - timedelta(days=60)
+    deleted_files = []
+    errors = []
+
+    try:
+        for root, _dirs, files in os.walk(data_path):
+            for filename in files:
+                if not filename.lower().endswith('.mp4'):
+                    continue
+                filepath = os.path.join(root, filename)
+                try:
+                    mtime = datetime.fromtimestamp(os.path.getmtime(filepath))
+                    if mtime < cutoff:
+                        file_size = os.path.getsize(filepath)
+                        age_days = (datetime.now() - mtime).days
+                        os.remove(filepath)
+                        deleted_files.append({
+                            'filename': filename,
+                            'path': filepath,
+                            'size_mb': round(file_size / (1024 * 1024), 2),
+                            'age_days': age_days
+                        })
+                except Exception as e:
+                    errors.append({'file': filepath, 'error': str(e)})
+    except Exception as e:
+        logging.error(f"[CLEANUP] Failed to walk {data_path}: {e}")
+        return jsonify({'error': f'Failed to scan directory: {str(e)}'}), 500
+
+    email_sent = False
+    if deleted_files or errors:
+        try:
+            api_key, from_email = get_resend_credentials()
+            if api_key:
+                resend.api_key = api_key
+                sender_email = from_email if from_email else 'noreply@ffmpegapi.net'
+
+                total_size = sum(f['size_mb'] for f in deleted_files)
+                file_rows = ''.join(
+                    f"<tr><td>{f['filename']}</td><td>{f['size_mb']} MB</td><td>{f['age_days']} days</td></tr>"
+                    for f in deleted_files
+                )
+                error_section = ''
+                if errors:
+                    error_rows = ''.join(
+                        f"<tr><td>{e['file']}</td><td>{e['error']}</td></tr>"
+                        for e in errors
+                    )
+                    error_section = f"""
+                    <h3>Errors ({len(errors)})</h3>
+                    <table border="1" cellpadding="5" cellspacing="0">
+                        <tr><th>File</th><th>Error</th></tr>
+                        {error_rows}
+                    </table>
+                    """
+
+                email_html = f"""
+                <h2>Video Cleanup Report - {datetime.now().strftime('%Y-%m-%d %H:%M')}</h2>
+                <p><strong>Files deleted:</strong> {len(deleted_files)}</p>
+                <p><strong>Total space freed:</strong> {total_size:.2f} MB</p>
+                {f'''
+                <h3>Deleted Files</h3>
+                <table border="1" cellpadding="5" cellspacing="0">
+                    <tr><th>Filename</th><th>Size</th><th>Age</th></tr>
+                    {file_rows}
+                </table>
+                ''' if deleted_files else '<p>No files deleted.</p>'}
+                {error_section}
+                """
+
+                params = {
+                    "from": sender_email,
+                    "to": ["info@ffmpegapi.net"],
+                    "subject": f"Video Cleanup Report - {datetime.now().strftime('%Y-%m-%d')}",
+                    "html": email_html,
+                }
+                resend.Emails.send(params)
+                email_sent = True
+                logging.info(f"[CLEANUP] Report email sent. Deleted {len(deleted_files)} files.")
+            else:
+                logging.error("[CLEANUP] Could not send email - Resend not configured")
+        except Exception as e:
+            logging.error(f"[CLEANUP] Failed to send report email: {e}")
+
+    logging.info(f"[CLEANUP] Complete. Deleted {len(deleted_files)} files, {len(errors)} errors.")
+    return jsonify({
+        'deleted_count': len(deleted_files),
+        'deleted_files': [f['filename'] for f in deleted_files],
+        'errors': errors,
+        'email_sent': email_sent
+    })
+
+
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=5000, debug=True)

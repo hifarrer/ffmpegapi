@@ -53,6 +53,21 @@ def _google_oauth_credentials():
     return client_id, client_secret
 
 
+def _google_oauth_redirect_uri():
+    """
+    Build redirect_uri from the incoming request (scheme + host).
+
+    Using url_for(..., _external=True) alone follows SERVER_NAME (e.g. www),
+    while the Flask session cookie is scoped to the host the user actually
+    used (e.g. apex). Google then sends them to www without the session cookie,
+    and OAuth state validation fails. This keeps authorize, callback, and
+    token exchange aligned with the cookie host.
+    """
+    root = f"{request.scheme}://{request.host}".rstrip("/")
+    path = url_for("auth.google_callback", _external=False)
+    return root + path
+
+
 def _unique_username_from_email(email: str) -> str:
     """Pick a username (4–80 chars) from email local-part; ensure uniqueness."""
     local = email.split("@", 1)[0] if "@" in email else email
@@ -236,7 +251,7 @@ def google_login():
         session[SESSION_POST_OAUTH_REDIRECT] = next_raw
     state = secrets.token_urlsafe(32)
     session[SESSION_GOOGLE_OAUTH_STATE] = state
-    redirect_uri = url_for("auth.google_callback", _external=True)
+    redirect_uri = _google_oauth_redirect_uri()
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
@@ -274,7 +289,7 @@ def google_callback():
     if not code:
         flash("Missing authorization code from Google.", "danger")
         return redirect(url_for("auth.login"))
-    redirect_uri = url_for("auth.google_callback", _external=True)
+    redirect_uri = _google_oauth_redirect_uri()
     try:
         tok_resp = requests.post(
             GOOGLE_TOKEN_ENDPOINT,
