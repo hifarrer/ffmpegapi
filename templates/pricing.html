@@ -222,6 +222,17 @@
     </nav>
 
     <div class="container py-4">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                <div class="alert alert-{{ 'danger' if category == 'error' else category }} alert-dismissible fade show" role="alert">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
         <div class="hero-section">
             <h1 class="page-title">Choose Your <span class="highlight">Plan</span></h1>
             <p class="page-subtitle">Select the perfect plan for your video processing needs</p>
@@ -330,26 +341,32 @@
                                     {% endif %}
                                 {% else %}
                                     <div class="d-grid gap-2">
-                                        {% if plan.stripe_monthly_price_id %}
-                                        <form method="POST" action="{{ url_for('stripe.create_checkout_session') }}" class="monthly-form">
-                                            <input type="hidden" name="plan_id" value="{{ plan.id }}">
-                                            <input type="hidden" name="billing_cycle" value="monthly">
-                                            <button type="submit" class="btn {% if plan.name == 'Premium' %}btn-gradient{% else %}btn-outline-light{% endif %} w-100">
-                                                <i class="fas fa-credit-card me-2"></i>
-                                                {% if current_user.subscription and current_user.subscription.plan.name == 'Free' %}Upgrade Monthly{% else %}Subscribe Monthly{% endif %}
-                                            </button>
-                                        </form>
-                                        {% endif %}
-                                        
-                                        {% if plan.stripe_yearly_price_id %}
-                                        <form method="POST" action="{{ url_for('stripe.create_checkout_session') }}" class="yearly-form d-none">
-                                            <input type="hidden" name="plan_id" value="{{ plan.id }}">
-                                            <input type="hidden" name="billing_cycle" value="yearly">
-                                            <button type="submit" class="btn {% if plan.name == 'Premium' %}btn-gradient{% else %}btn-outline-light{% endif %} w-100">
-                                                <i class="fas fa-credit-card me-2"></i>
-                                                {% if current_user.subscription and current_user.subscription.plan.name == 'Free' %}Upgrade Yearly{% else %}Subscribe Yearly{% endif %}
-                                            </button>
-                                        </form>
+                                        {% if plan.stripe_monthly_price_id or plan.stripe_yearly_price_id %}
+                                            {% if plan.stripe_monthly_price_id %}
+                                            <form method="POST" action="{{ url_for('stripe.create_checkout_session') }}" class="monthly-form">
+                                                <input type="hidden" name="plan_id" value="{{ plan.id }}">
+                                                <input type="hidden" name="billing_cycle" value="monthly">
+                                                <button type="submit" class="btn {% if plan.name == 'Premium' %}btn-gradient{% else %}btn-outline-light{% endif %} w-100">
+                                                    <i class="fas fa-credit-card me-2"></i>
+                                                    {% if current_user.subscription and current_user.subscription.plan.name == 'Free' %}Upgrade Monthly{% else %}Subscribe Monthly{% endif %}
+                                                </button>
+                                            </form>
+                                            {% endif %}
+                                            
+                                            {% if plan.stripe_yearly_price_id %}
+                                            <form method="POST" action="{{ url_for('stripe.create_checkout_session') }}" class="yearly-form d-none">
+                                                <input type="hidden" name="plan_id" value="{{ plan.id }}">
+                                                <input type="hidden" name="billing_cycle" value="yearly">
+                                                <button type="submit" class="btn {% if plan.name == 'Premium' %}btn-gradient{% else %}btn-outline-light{% endif %} w-100">
+                                                    <i class="fas fa-credit-card me-2"></i>
+                                                    {% if current_user.subscription and current_user.subscription.plan.name == 'Free' %}Upgrade Yearly{% else %}Subscribe Yearly{% endif %}
+                                                </button>
+                                            </form>
+                                            {% endif %}
+                                        {% else %}
+                                            <a href="{{ url_for('contact') }}" class="btn {% if plan.name == 'Premium' %}btn-gradient{% else %}btn-outline-light{% endif %} w-100">
+                                                <i class="fas fa-envelope me-2"></i>Contact Us to Subscribe
+                                            </a>
                                         {% endif %}
                                     </div>
                                 {% endif %}

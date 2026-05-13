@@ -1,14 +1,97 @@
-from flask import Blueprint, render_template, redirect, url_for, flash, request, jsonify
+from flask import Blueprint, render_template, redirect, url_for, flash, request, jsonify, session
 from flask_login import login_user, logout_user, login_required, current_user
 from models import db, User, ApiKey, SubscriptionPlan, UserSubscription
 from forms import RegistrationForm, LoginForm, ApiKeyForm
 from datetime import datetime, timedelta
+from urllib.parse import urlencode
+from sqlalchemy import func
 import logging
 import resend
 import requests
 import os
+import re
+import secrets
 
 auth = Blueprint('auth', __name__)
+
+GOOGLE_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
+GOOGLE_USERINFO_ENDPOINT = "https://www.googleapis.com/oauth2/v2/userinfo"
+GOOGLE_OAUTH_SCOPES = "openid email profile"
+SESSION_GOOGLE_OAUTH_STATE = "google_oauth_state"
+SESSION_POST_OAUTH_REDIRECT = "post_oauth_redirect"
+
+RECAPTCHA_VERIFY_URL = "https://www.google.com/recaptcha/api/siteverify"
+
+
+def _verify_recaptcha_response(token: str) -> bool:
+    """POST to Google siteverify. Caller must only invoke when RECAPTCHA_SECRET_KEY is set."""
+    secret = (os.environ.get("RECAPTCHA_SECRET_KEY") or "").strip()
+    if not secret:
+        return True
+    if not (token or "").strip():
+        return False
+    try:
+        resp = requests.post(
+            RECAPTCHA_VERIFY_URL,
+            data={
+                "secret": secret,
+                "response": token.strip(),
+                "remoteip": (request.remote_addr or ""),
+            },
+            timeout=10,
+        )
+        return bool(resp.json().get("success"))
+    except (requests.RequestException, ValueError) as e:
+        logging.error("reCAPTCHA verification request failed: %s", e, exc_info=True)
+        return False
+
+
+def _google_oauth_credentials():
+    client_id = (os.environ.get("GOOGLE_CLIENT_ID") or "").strip()
+    client_secret = (os.environ.get("GOOGLE_CLIENT_SECRET") or "").strip()
+    return client_id, client_secret
+
+
+def _unique_username_from_email(email: str) -> str:
+    """Pick a username (4–80 chars) from email local-part; ensure uniqueness."""
+    local = email.split("@", 1)[0] if "@" in email else email
+    base = re.sub(r"[^a-zA-Z0-9_]", "_", local).strip("_") or "user"
+    if len(base) < 4:
+        base = (base + "_user")[:80]
+    if len(base) < 4:
+        base = "user_" + secrets.token_hex(4)
+    base = base[:80]
+    for n in range(5000):
+        suffix = "" if n == 0 else "_" + str(n + 1)
+        candidate = (base[: max(1, 80 - len(suffix))] + suffix)[:80]
+        if not User.query.filter_by(username=candidate).first():
+            return candidate
+    while True:
+        candidate = ("g_" + secrets.token_hex(16))[:80]
+        if not User.query.filter_by(username=candidate).first():
+            return candidate
+
+
+def _provision_free_plan_and_api_key(user):
+    """Mirror post-registration defaults from register() for new OAuth users."""
+    if not ApiKey.query.filter_by(user_id=user.id, is_active=True).first():
+        user.generate_api_key("My First API Key")
+    existing_sub = UserSubscription.query.filter_by(user_id=user.id, status="active").first()
+    if existing_sub:
+        return
+    free_plan = SubscriptionPlan.query.filter_by(name="Free", is_active=True).first()
+    if free_plan:
+        subscription = UserSubscription()
+        subscription.user_id = user.id
+        subscription.plan_id = free_plan.id
+        subscription.status = "active"
+        subscription.billing_cycle = "monthly"
+        subscription.current_period_start = datetime.utcnow()
+        subscription.current_period_end = datetime.utcnow() + timedelta(days=30)
+        subscription.api_calls_used = 0
+        db.session.add(subscription)
+        db.session.commit()
 
 def get_resend_credentials():
     """Get Resend API credentials from env vars or Replit connector."""
@@ -122,13 +205,204 @@ def send_verification_email(user_email, username, verification_token):
         logging.error(f"Error sending verification email: {str(e)}", exc_info=True)
         return False
 
+
+def _safe_post_oauth_redirect():
+    next_page = session.pop(SESSION_POST_OAUTH_REDIRECT, None)
+    if (
+        next_page
+        and isinstance(next_page, str)
+        and next_page.startswith("/")
+        and not next_page.startswith("//")
+    ):
+        return next_page
+    return url_for("dashboard")
+
+
+@auth.route("/login/google")
+def google_login():
+    if current_user.is_authenticated:
+        return redirect(url_for("index"))
+    client_id, client_secret = _google_oauth_credentials()
+    if not client_id or not client_secret:
+        flash("Google sign-in is not configured.", "warning")
+        return redirect(url_for("auth.login"))
+    next_raw = request.args.get("next")
+    if (
+        next_raw
+        and isinstance(next_raw, str)
+        and next_raw.startswith("/")
+        and not next_raw.startswith("//")
+    ):
+        session[SESSION_POST_OAUTH_REDIRECT] = next_raw
+    state = secrets.token_urlsafe(32)
+    session[SESSION_GOOGLE_OAUTH_STATE] = state
+    redirect_uri = url_for("auth.google_callback", _external=True)
+    params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": GOOGLE_OAUTH_SCOPES,
+        "state": state,
+        "access_type": "offline",
+        "prompt": "select_account",
+    }
+    return redirect(GOOGLE_AUTH_ENDPOINT + "?" + urlencode(params))
+
+
+@auth.route("/callback/google")
+def google_callback():
+    if current_user.is_authenticated:
+        return redirect(url_for("index"))
+    client_id, client_secret = _google_oauth_credentials()
+    if not client_id or not client_secret:
+        flash("Google sign-in is not configured.", "warning")
+        return redirect(url_for("auth.login"))
+    if request.args.get("error"):
+        logging.warning(
+            "Google OAuth error: %s %s",
+            request.args.get("error"),
+            request.args.get("error_description"),
+        )
+        flash("Google sign-in was cancelled or failed.", "danger")
+        return redirect(url_for("auth.login"))
+    state = request.args.get("state")
+    if not state or state != session.get(SESSION_GOOGLE_OAUTH_STATE):
+        flash("Invalid sign-in state. Please try again.", "danger")
+        return redirect(url_for("auth.login"))
+    session.pop(SESSION_GOOGLE_OAUTH_STATE, None)
+    code = request.args.get("code")
+    if not code:
+        flash("Missing authorization code from Google.", "danger")
+        return redirect(url_for("auth.login"))
+    redirect_uri = url_for("auth.google_callback", _external=True)
+    try:
+        tok_resp = requests.post(
+            GOOGLE_TOKEN_ENDPOINT,
+            data={
+                "code": code,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code",
+            },
+            headers={"Accept": "application/json"},
+            timeout=30,
+        )
+    except requests.RequestException as e:
+        logging.error("Google token exchange request failed: %s", e, exc_info=True)
+        flash("Could not reach Google to complete sign-in.", "danger")
+        return redirect(url_for("auth.login"))
+    if tok_resp.status_code != 200:
+        logging.error(
+            "Google token HTTP %s: %s",
+            tok_resp.status_code,
+            tok_resp.text[:500],
+        )
+        flash("Could not complete Google sign-in.", "danger")
+        return redirect(url_for("auth.login"))
+    access_token = tok_resp.json().get("access_token")
+    if not access_token:
+        flash("Google did not return an access token.", "danger")
+        return redirect(url_for("auth.login"))
+    try:
+        ui_resp = requests.get(
+            GOOGLE_USERINFO_ENDPOINT,
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=30,
+        )
+    except requests.RequestException as e:
+        logging.error("Google userinfo request failed: %s", e, exc_info=True)
+        flash("Could not load your Google profile.", "danger")
+        return redirect(url_for("auth.login"))
+    if ui_resp.status_code != 200:
+        logging.error(
+            "Google userinfo HTTP %s: %s",
+            ui_resp.status_code,
+            ui_resp.text[:500],
+        )
+        flash("Could not load your Google profile.", "danger")
+        return redirect(url_for("auth.login"))
+    profile = ui_resp.json()
+    google_sub = profile.get("id")
+    email = (profile.get("email") or "").strip().lower()
+    if not google_sub or not email:
+        flash("Google did not return a usable account id or email.", "danger")
+        return redirect(url_for("auth.login"))
+    if not profile.get("verified_email"):
+        flash(
+            "Your Google account email must be verified to use Google sign-in.",
+            "warning",
+        )
+        return redirect(url_for("auth.login"))
+
+    user = User.query.filter_by(google_id=google_sub).first()
+    if user:
+        if not user.active:
+            flash("This account is disabled.", "danger")
+            return redirect(url_for("auth.login"))
+        login_user(user, remember=True)
+        flash("Signed in with Google.", "success")
+        return redirect(_safe_post_oauth_redirect())
+
+    user = User.query.filter(func.lower(User.email) == email).first()
+    if user:
+        if not user.active:
+            flash("This account is disabled.", "danger")
+            return redirect(url_for("auth.login"))
+        if user.google_id and user.google_id != google_sub:
+            flash(
+                "This email is already linked to a different Google account.",
+                "danger",
+            )
+            return redirect(url_for("auth.login"))
+        user.google_id = google_sub
+        user.email = email
+        user.email_verified = True
+        user.verification_token = None
+        user.verification_token_expiry = None
+        db.session.commit()
+        login_user(user, remember=True)
+        flash("Signed in with Google. Your account has been linked.", "success")
+        return redirect(_safe_post_oauth_redirect())
+
+    username = _unique_username_from_email(email)
+    new_user = User()
+    new_user.username = username
+    new_user.email = email
+    new_user.google_id = google_sub
+    new_user.email_verified = True
+    new_user.password_hash = None
+    db.session.add(new_user)
+    db.session.commit()
+    _provision_free_plan_and_api_key(new_user)
+    login_user(new_user, remember=True)
+    flash("Welcome! Your account was created with Google.", "success")
+    return redirect(_safe_post_oauth_redirect())
+
+
 @auth.route('/register', methods=['GET', 'POST'])
 def register():
     if current_user.is_authenticated:
         return redirect(url_for('index'))
     
+    recaptcha_site_key = (os.environ.get("RECAPTCHA_SITE_KEY") or "").strip()
+    recaptcha_secret = (os.environ.get("RECAPTCHA_SECRET_KEY") or "").strip()
+
     form = RegistrationForm()
     if form.validate_on_submit():
+        if recaptcha_secret:
+            recaptcha_token = request.form.get("g-recaptcha-response", "")
+            if not _verify_recaptcha_response(recaptcha_token):
+                flash(
+                    "reCAPTCHA verification failed. Please complete the check and try again.",
+                    "danger",
+                )
+                return render_template(
+                    "register.html",
+                    form=form,
+                    recaptcha_site_key=recaptcha_site_key,
+                )
+
         user = User()
         user.username = form.username.data
         user.email = form.email.data
@@ -169,7 +443,11 @@ def register():
         
         return redirect(url_for('auth.login'))
     
-    return render_template('register.html', form=form)
+    return render_template(
+        "register.html",
+        form=form,
+        recaptcha_site_key=recaptcha_site_key,
+    )
 
 @auth.route('/verify-email/<token>')
 def verify_email(token):

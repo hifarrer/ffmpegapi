@@ -23,8 +23,8 @@ def create_checkout_session():
     try:
         settings = get_stripe_config()
         if not settings:
-            flash('Stripe is not configured. Please contact support.', 'error')
-            return redirect(url_for('dashboard'))
+            flash('Payment processing is not configured yet. Please contact support.', 'error')
+            return redirect(url_for('pricing'))
         
         plan_id = request.form.get('plan_id')
         billing_cycle = request.form.get('billing_cycle')  # 'monthly' or 'yearly'
@@ -38,8 +38,8 @@ def create_checkout_session():
             price_id = plan.stripe_monthly_price_id
             
         if not price_id:
-            flash('This plan is not available for the selected billing cycle.', 'error')
-            return redirect(url_for('dashboard'))
+            flash('This plan is not available for the selected billing cycle. Please contact support.', 'error')
+            return redirect(url_for('pricing'))
         
         # Check if user already has an active paid subscription
         existing_subscription = UserSubscription.query.filter_by(
@@ -76,7 +76,7 @@ def create_checkout_session():
         except Exception as e:
             logging.error(f"Error creating/finding Stripe customer: {str(e)}")
             flash('Error setting up payment. Please try again.', 'error')
-            return redirect(url_for('dashboard'))
+            return redirect(url_for('pricing'))
         
         # Create checkout session
         success_url = request.url_root.rstrip('/') + url_for('stripe.subscription_success', _external=False)
@@ -103,10 +103,8 @@ def create_checkout_session():
         
     except Exception as e:
         logging.error(f"Error creating checkout session: {str(e)}")
-        logging.error(f"Using price_id: {price_id}")
-        logging.error(f"Live mode enabled: {settings.is_live_mode}")
         flash('Error creating checkout session. Please try again.', 'error')
-        return redirect(url_for('dashboard'))
+        return redirect(url_for('pricing'))
 
 @stripe_bp.route('/subscription-success')
 @login_required
