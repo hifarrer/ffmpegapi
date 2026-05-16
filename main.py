@@ -26,6 +26,16 @@ from forms import RegistrationForm, LoginForm, ApiKeyForm
 from auth_routes import auth
 from stripe_routes import stripe_bp
 from storage_utils import upload_to_storage, get_storage_download_url
+from ai_discovery import (
+    docs_json_ld,
+    generate_docs_markdown,
+    generate_examples_markdown,
+    generate_llms_full_txt,
+    generate_llms_txt,
+    generate_openapi_spec,
+    generate_pricing_markdown,
+    homepage_json_ld,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -1920,7 +1930,11 @@ def index():
         if user_api_keys:
             api_key_to_use = user_api_keys[0].key
     
-    return render_template('index.html', default_api_key=api_key_to_use)
+    return render_template(
+        'index.html',
+        default_api_key=api_key_to_use,
+        homepage_json_ld=homepage_json_ld(),
+    )
 
 @app.route('/dashboard')
 @login_required
@@ -1931,7 +1945,50 @@ def dashboard():
 @app.route('/docs')
 def api_docs():
     """API documentation page - no login required"""
-    return render_template('api_docs.html')
+    return render_template('api_docs.html', docs_json_ld=docs_json_ld())
+
+@app.route('/llms.txt')
+def llms_txt():
+    """Concise LLM discovery file."""
+    return Response(generate_llms_txt(), content_type='text/plain; charset=utf-8')
+
+@app.route('/llms-full.txt')
+def llms_full_txt():
+    """Expanded LLM context file with docs, examples, and pricing summary."""
+    try:
+        plans = SubscriptionPlan.query.filter_by(is_active=True).order_by(SubscriptionPlan.sort_order).all()
+    except Exception as e:
+        logging.warning(f"Could not load plans for llms-full.txt: {str(e)}")
+        plans = None
+    return Response(generate_llms_full_txt(plans), content_type='text/plain; charset=utf-8')
+
+@app.route('/docs.md')
+def docs_markdown():
+    """Markdown API documentation."""
+    return Response(generate_docs_markdown(full=True), content_type='text/markdown; charset=utf-8')
+
+@app.route('/examples.md')
+def examples_markdown():
+    """Markdown API examples."""
+    return Response(generate_examples_markdown(), content_type='text/markdown; charset=utf-8')
+
+@app.route('/pricing.md')
+def pricing_markdown():
+    """Markdown pricing summary."""
+    try:
+        plans = SubscriptionPlan.query.filter_by(is_active=True).order_by(SubscriptionPlan.sort_order).all()
+    except Exception as e:
+        logging.warning(f"Could not load plans for pricing.md: {str(e)}")
+        plans = None
+    return Response(generate_pricing_markdown(plans), content_type='text/markdown; charset=utf-8')
+
+@app.route('/openapi.json')
+def openapi_json():
+    """OpenAPI specification for public documented API endpoints."""
+    return Response(
+        json.dumps(generate_openapi_spec(), indent=2),
+        content_type='application/json; charset=utf-8',
+    )
 
 @app.route('/download-readme')
 def download_readme():
@@ -3281,6 +3338,12 @@ def sitemap():
     static_pages = [
         {'loc': url_for('index', _external=True), 'priority': '1.0', 'changefreq': 'daily'},
         {'loc': url_for('api_docs', _external=True), 'priority': '0.9', 'changefreq': 'weekly'},
+        {'loc': url_for('docs_markdown', _external=True), 'priority': '0.9', 'changefreq': 'weekly'},
+        {'loc': url_for('examples_markdown', _external=True), 'priority': '0.8', 'changefreq': 'weekly'},
+        {'loc': url_for('pricing_markdown', _external=True), 'priority': '0.8', 'changefreq': 'weekly'},
+        {'loc': url_for('llms_txt', _external=True), 'priority': '0.8', 'changefreq': 'weekly'},
+        {'loc': url_for('llms_full_txt', _external=True), 'priority': '0.8', 'changefreq': 'weekly'},
+        {'loc': url_for('openapi_json', _external=True), 'priority': '0.8', 'changefreq': 'weekly'},
         {'loc': url_for('pricing', _external=True), 'priority': '0.9', 'changefreq': 'weekly'},
         {'loc': url_for('blog', _external=True), 'priority': '0.8', 'changefreq': 'weekly'},
         {'loc': url_for('blog_article', slug='best-tools-vibe-coding-2025', _external=True), 'priority': '0.8', 'changefreq': 'monthly'},
@@ -3317,6 +3380,12 @@ def robots():
         'User-agent: *',
         'Allow: /',
         'Allow: /docs',
+        'Allow: /docs.md',
+        'Allow: /examples.md',
+        'Allow: /pricing.md',
+        'Allow: /llms.txt',
+        'Allow: /llms-full.txt',
+        'Allow: /openapi.json',
         'Allow: /pricing',
         'Allow: /blog',
         'Allow: /contact',

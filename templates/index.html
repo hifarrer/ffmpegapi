@@ -94,6 +94,11 @@
       ]
     }
     </script>
+    {% if homepage_json_ld %}
+    <script type="application/ld+json">
+    {{ homepage_json_ld|safe }}
+    </script>
+    {% endif %}
     
     <link href="https://cdn.replit.com/agent/bootstrap-agent-dark-theme.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
