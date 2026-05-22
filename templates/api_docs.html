@@ -282,17 +282,17 @@
                 <!-- AI Tools -->
                 <section id="ai-tools" class="mb-5">
                     <h2><i class="fas fa-robot me-2"></i>AI Tools</h2>
-                    <p>If you want to use AI Tools like Cursor, you can download this README file to your project and ask your AI agent to use it as reference.</p>
+                    <p>If you want to use AI tools like Cursor, copy the API documentation below and paste it into your project or chat so your AI agent can use it as reference.</p>
                     
                     <div class="text-center mt-4">
-                        <a href="{{ url_for('download_readme') }}" class="btn btn-primary btn-lg" download>
-                            <i class="fas fa-download me-2"></i>Download README_FFMPEGAPI.md
-                        </a>
+                        <button type="button" id="copyLlmInstructionsBtn" class="btn btn-primary btn-lg">
+                            <i class="fas fa-copy me-2"></i>Copy Instructions for LLM
+                        </button>
                     </div>
                     
                     <div class="alert alert-info mt-4">
                         <i class="fas fa-info-circle me-2"></i>
-                        <strong>Tip:</strong> This README contains all API endpoints, parameters, curl examples, and sample responses for easy integration with AI coding assistants.
+                        <strong>Tip:</strong> The copied instructions include all API endpoints, parameters, curl examples, and response details for easy integration with AI coding assistants. You can also view the <a href="{{ url_for('docs_markdown') }}">markdown version</a> directly.
                     </div>
                 </section>
 
@@ -4161,6 +4161,40 @@ if (result.success) {
                 }
             });
         });
+
+        // Copy API documentation for LLM assistants
+        const copyLlmInstructionsBtn = document.getElementById('copyLlmInstructionsBtn');
+        if (copyLlmInstructionsBtn) {
+            const defaultLabel = copyLlmInstructionsBtn.innerHTML;
+
+            copyLlmInstructionsBtn.addEventListener('click', async () => {
+                copyLlmInstructionsBtn.disabled = true;
+
+                try {
+                    const response = await fetch('{{ url_for("docs_markdown") }}');
+                    if (!response.ok) {
+                        throw new Error('Could not load API documentation');
+                    }
+
+                    const markdown = await response.text();
+                    await navigator.clipboard.writeText(markdown);
+
+                    copyLlmInstructionsBtn.innerHTML = '<i class="fas fa-check me-2"></i>Copied!';
+                    copyLlmInstructionsBtn.classList.replace('btn-primary', 'btn-success');
+                } catch (error) {
+                    copyLlmInstructionsBtn.innerHTML = '<i class="fas fa-exclamation-triangle me-2"></i>Copy failed';
+                    copyLlmInstructionsBtn.classList.replace('btn-primary', 'btn-danger');
+                    console.error(error);
+                }
+
+                setTimeout(() => {
+                    copyLlmInstructionsBtn.disabled = false;
+                    copyLlmInstructionsBtn.innerHTML = defaultLabel;
+                    copyLlmInstructionsBtn.classList.remove('btn-success', 'btn-danger');
+                    copyLlmInstructionsBtn.classList.add('btn-primary');
+                }, 2000);
+            });
+        }
     </script>
 </body>
 </html>
