@@ -430,6 +430,224 @@ def create_video_with_ffmpeg(image_path, audio_path, output_path):
         logging.error(f"FFMPEG processing error: {str(e)}")
         return False, f"Video processing error: {str(e)}"
 
+def parse_dimensions(dimensions, default=None):
+    """Parse dimensions in WIDTHxHEIGHT format."""
+    if not dimensions:
+        return default
+
+    try:
+        width, height = str(dimensions).lower().split('x', 1)
+        width = int(width.strip())
+        height = int(height.strip())
+        if width <= 0 or height <= 0:
+            return None
+        return width, height
+    except Exception:
+        return None
+
+def get_file_extension_from_url(url, default_extension):
+    """Return a lowercase file extension from a URL path, ignoring query params."""
+    try:
+        from urllib.parse import urlparse
+        path = urlparse(url).path
+        _, ext = os.path.splitext(path)
+        ext = ext.lstrip('.').lower()
+        return ext or default_extension
+    except Exception:
+        return default_extension
+
+def normalize_url_list(data, plural_key, singular_key):
+    """Accept a plural array or a backward-compatible singular string."""
+    value = data.get(plural_key)
+    if value is None:
+        value = data.get(singular_key)
+
+    if isinstance(value, str):
+        value = [value]
+
+    if not isinstance(value, list):
+        return None
+
+    normalized = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            return None
+        normalized.append(item.strip())
+
+    return normalized
+
+def normalize_transition_options(data, num_items):
+    """Validate optional image transition settings for multi image/audio merge."""
+    effect = (data.get('transition_effect') or data.get('transition') or 'none')
+    effect = str(effect).strip().lower()
+
+    supported_effects = {
+        'none',
+        'fade',
+        'wipeleft',
+        'wiperight',
+        'wipeup',
+        'wipedown',
+        'slideleft',
+        'slideright',
+        'slideup',
+        'slidedown',
+        'circlecrop',
+        'rectcrop',
+        'distance',
+        'fadeblack',
+        'fadewhite',
+        'radial',
+        'smoothleft',
+        'smoothright',
+        'smoothup',
+        'smoothdown',
+    }
+
+    if effect not in supported_effects:
+        return None, None, (
+            f"Invalid transition_effect. Allowed values: {', '.join(sorted(supported_effects))}"
+        )
+
+    if effect == 'none' or num_items < 2:
+        return 'none', 0, None
+
+    raw_duration = data.get('transition_duration', 0.5)
+    try:
+        duration = float(raw_duration)
+    except (TypeError, ValueError):
+        return None, None, "transition_duration must be a number of seconds"
+
+    if duration <= 0:
+        return None, None, "transition_duration must be greater than 0 when transition_effect is set"
+
+    if duration > 5:
+        return None, None, "transition_duration cannot be greater than 5 seconds"
+
+    return effect, duration, None
+
+def create_slideshow_with_ffmpeg(
+    image_paths,
+    audio_paths,
+    output_path,
+    transition_effect='none',
+    transition_duration=0,
+    dimensions=None,
+):
+    """Create a video where each image is shown for its paired audio duration."""
+    try:
+        if len(image_paths) != len(audio_paths):
+            return False, "image_urls and audio_urls must have the same number of items"
+
+        if not image_paths:
+            return False, "At least one image and one audio file are required"
+
+        if len(image_paths) == 1 and not dimensions:
+            return create_video_with_ffmpeg(image_paths[0], audio_paths[0], output_path)
+
+        target_dimensions = parse_dimensions(dimensions)
+        if dimensions and target_dimensions is None:
+            return False, "Invalid dimensions format. Use format like '1280x720'"
+
+        if target_dimensions is None:
+            success, first_dims = get_video_dimensions(image_paths[0])
+            if success:
+                target_dimensions = first_dims
+            else:
+                logging.warning(f"Could not read first image dimensions: {first_dims}. Using 1280x720.")
+                target_dimensions = (1280, 720)
+
+        target_width, target_height = target_dimensions
+
+        audio_durations = []
+        for i, audio_path in enumerate(audio_paths):
+            duration, err = get_media_duration(audio_path)
+            if err:
+                return False, f"Unable to get duration for audio {i + 1}: {err}"
+            audio_durations.append(duration)
+
+        use_transition = transition_effect != 'none' and transition_duration > 0 and len(image_paths) > 1
+
+        inputs = ['ffmpeg']
+        for i, image_path in enumerate(image_paths):
+            image_duration = audio_durations[i]
+            if use_transition and i < len(image_paths) - 1:
+                image_duration += transition_duration
+            inputs.extend(['-loop', '1', '-t', f"{image_duration:.3f}", '-i', image_path])
+
+        for audio_path in audio_paths:
+            inputs.extend(['-i', audio_path])
+
+        filter_parts = []
+        for i in range(len(image_paths)):
+            filter_parts.append(
+                f"[{i}:v:0]scale={target_width}:{target_height}:"
+                f"force_original_aspect_ratio=decrease,"
+                f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2,"
+                f"setsar=1,fps=30,format=yuv420p[v{i}]"
+            )
+
+        if use_transition:
+            current_label = "v0"
+            elapsed = audio_durations[0]
+            for i in range(1, len(image_paths)):
+                output_label = f"vx{i}"
+                filter_parts.append(
+                    f"[{current_label}][v{i}]xfade=transition={transition_effect}:"
+                    f"duration={transition_duration:.3f}:offset={elapsed:.3f}[{output_label}]"
+                )
+                current_label = output_label
+                elapsed += audio_durations[i]
+            video_output_label = current_label
+        else:
+            video_inputs = ''.join(f"[v{i}]" for i in range(len(image_paths)))
+            filter_parts.append(f"{video_inputs}concat=n={len(image_paths)}:v=1:a=0[outv]")
+            video_output_label = "outv"
+
+        audio_labels = []
+        audio_offset = len(image_paths)
+        for i in range(len(audio_paths)):
+            label = f"a{i}"
+            filter_parts.append(
+                f"[{audio_offset + i}:a:0]aresample=48000,aformat=channel_layouts=stereo[{label}]"
+            )
+            audio_labels.append(f"[{label}]")
+
+        filter_parts.append(
+            f"{''.join(audio_labels)}concat=n={len(audio_paths)}:v=0:a=1[outa]"
+        )
+
+        cmd = inputs + [
+            '-filter_complex', ';'.join(filter_parts),
+            '-map', f"[{video_output_label}]",
+            '-map', '[outa]',
+            '-c:v', 'libx264',
+            '-c:a', 'aac',
+            '-b:a', '192k',
+            '-preset', 'veryfast',
+            '-crf', '23',
+            '-shortest',
+            '-y',
+            output_path,
+        ]
+
+        logging.info(f"Running FFMPEG slideshow command: {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+
+        if result.returncode == 0:
+            logging.info("FFMPEG slideshow processing completed successfully")
+            return True, "Video created successfully"
+
+        logging.error(f"FFMPEG slideshow error: {result.stderr}")
+        return False, f"FFMPEG slideshow processing failed: {result.stderr}"
+
+    except subprocess.TimeoutExpired:
+        logging.error("FFMPEG slideshow processing timed out")
+        return False, "Video processing timed out"
+    except Exception as e:
+        logging.error(f"FFMPEG slideshow processing error: {str(e)}")
+        return False, f"Video processing error: {str(e)}"
+
 def validate_url(url):
     """Validate URL is safe to download from (not localhost, private IPs, etc.)"""
     from urllib.parse import urlparse
@@ -2079,7 +2297,7 @@ def contact():
 @log_api_request
 @require_api_key
 def merge_image_audio():
-    """API endpoint to merge image and audio into video from URLs or files (sync/async)"""
+    """API endpoint to merge image/audio pairs into a video from URLs or files (sync/async)"""
     # Log full request details for debugging
     api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
     logging.info(f"[MERGE_IMAGE_AUDIO] Request received from API key: {api_key[:20]}...")
@@ -2091,48 +2309,119 @@ def merge_image_audio():
     
     try:
         # Initialize variables at function level
-        image_path = ""
-        audio_path = ""
+        image_paths = []
+        audio_paths = []
+        data = {}
+        transition_effect = 'none'
+        transition_duration = 0
+        dimensions = None
         
         # Check if this is a file upload request (FormData) or JSON request (URLs)
         is_file_upload = bool(request.files)
         async_processing = False
+        request_id = str(uuid.uuid4())
         
         if is_file_upload:
             # Handle file uploads from the UI
-            if 'image' not in request.files or 'audio' not in request.files:
+            image_files = request.files.getlist('image') or request.files.getlist('images')
+            audio_files = request.files.getlist('audio') or request.files.getlist('audios')
+
+            if not image_files or not audio_files:
                 return jsonify({
                     'success': False,
                     'error': 'Both image and audio files are required'
                 }), 400
-            
-            image_file = request.files['image']
-            audio_file = request.files['audio']
-            
-            if not image_file.filename or not audio_file.filename:
+
+            if len(image_files) != len(audio_files):
                 return jsonify({
                     'success': False,
-                    'error': 'Both image and audio files must be selected'
+                    'error': 'The number of image files must match the number of audio files'
                 }), 400
-            
-            # Save uploaded files
-            request_id = str(uuid.uuid4())
+
+            if any(not file.filename for file in image_files) or any(not file.filename for file in audio_files):
+                return jsonify({
+                    'success': False,
+                    'error': 'All image and audio files must be selected'
+                }), 400
+
+            transition_effect, transition_duration, transition_error = normalize_transition_options(
+                request.form,
+                len(image_files)
+            )
+            if transition_error:
+                return jsonify({'success': False, 'error': transition_error}), 400
+
+            dimensions = request.form.get('dimensions')
+
             os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-            
-            image_filename = f"{request_id}_image.{image_file.filename.split('.')[-1]}"
-            audio_filename = f"{request_id}_audio.{audio_file.filename.split('.')[-1]}"
-            
-            image_path = os.path.join(UPLOAD_FOLDER, image_filename)
-            audio_path = os.path.join(UPLOAD_FOLDER, audio_filename)
-            
-            image_file.save(image_path)
-            audio_file.save(audio_path)
+
+            for i, image_file in enumerate(image_files):
+                image_ext = image_file.filename.rsplit('.', 1)[-1].lower()
+                if image_ext not in ALLOWED_IMAGE_EXTENSIONS:
+                    for path in image_paths:
+                        cleanup_file(path)
+                    return jsonify({
+                        'success': False,
+                        'error': f'Invalid image format for file {i + 1}. Allowed formats: {", ".join(ALLOWED_IMAGE_EXTENSIONS)}'
+                    }), 400
+                image_filename = f"{request_id}_image_{i}.{image_ext}"
+                image_path = os.path.join(UPLOAD_FOLDER, image_filename)
+                image_file.save(image_path)
+                image_paths.append(image_path)
+
+            for i, audio_file in enumerate(audio_files):
+                audio_ext = audio_file.filename.rsplit('.', 1)[-1].lower()
+                if audio_ext not in ALLOWED_AUDIO_EXTENSIONS:
+                    for path in image_paths:
+                        cleanup_file(path)
+                    return jsonify({
+                        'success': False,
+                        'error': f'Invalid audio format for file {i + 1}. Allowed formats: {", ".join(ALLOWED_AUDIO_EXTENSIONS)}'
+                    }), 400
+                audio_filename = f"{request_id}_audio_{i}.{audio_ext}"
+                audio_path = os.path.join(UPLOAD_FOLDER, audio_filename)
+                audio_file.save(audio_path)
+                audio_paths.append(audio_path)
             
         else:
             # Handle JSON request with URLs
-            if request.is_json:
-                data = request.get_json()
-                async_processing = data.get('async', False)
+            if not request.is_json:
+                return jsonify({
+                    'success': False,
+                    'error': 'Content-Type must be application/json for URL-based processing'
+                }), 400
+
+            data = request.get_json() or {}
+            async_processing = data.get('async', False)
+
+            image_urls = normalize_url_list(data, 'image_urls', 'image')
+            audio_urls = normalize_url_list(data, 'audio_urls', 'audio')
+
+            if not image_urls or not audio_urls:
+                return jsonify({
+                    'success': False,
+                    'error': 'image_urls and audio_urls arrays are required. Backward-compatible image and audio strings are also supported.'
+                }), 400
+
+            if len(image_urls) != len(audio_urls):
+                return jsonify({
+                    'success': False,
+                    'error': 'image_urls and audio_urls must contain the same number of items'
+                }), 400
+
+            transition_effect, transition_duration, transition_error = normalize_transition_options(
+                data,
+                len(image_urls)
+            )
+            if transition_error:
+                return jsonify({'success': False, 'error': transition_error}), 400
+
+            dimensions = data.get('dimensions')
+            if dimensions and parse_dimensions(dimensions) is None:
+                return jsonify({
+                    'success': False,
+                    'error': "Invalid dimensions format. Use format like '1280x720'"
+                }), 400
             
             # If async processing is requested, create job and return immediately
             if async_processing:
@@ -2162,90 +2451,65 @@ def merge_image_audio():
                     'message': 'Job submitted for async processing. Use /api/job/{job_id}/status to check progress.',
                     'status_url': url_for('get_job_status', job_id=job.job_id, _external=True)
                 }), 202
-            
-            # Require JSON data for URL-based processing
-            if not request.is_json:
-                return jsonify({
-                    'success': False,
-                    'error': 'Content-Type must be application/json for URL-based processing'
-                }), 400
-                
-            data = request.get_json()
-            
-            if not data or 'image' not in data or 'audio' not in data:
-                return jsonify({
-                    'success': False,
-                    'error': 'Both image and audio URLs are required'
-                }), 400
-            
-            # Generate unique filename for this request
-            request_id = str(uuid.uuid4())
-            
-            image_url = data['image']
-            audio_url = data['audio']
-                
-            # Validate URLs
-            if not image_url or not audio_url:
-                return jsonify({
-                    'success': False,
-                    'error': 'Both image and audio must be valid URLs'
-                }), 400
-                
-            # Generate file paths for downloaded content
-            image_ext = image_url.split('.')[-1].lower() if '.' in image_url else 'jpg'
-            audio_ext = audio_url.split('.')[-1].lower() if '.' in audio_url else 'mp3'
-            
-            # Validate extensions
-            if image_ext not in ALLOWED_IMAGE_EXTENSIONS:
-                return jsonify({
-                    'success': False,
-                    'error': f'Invalid image format in URL. Allowed formats: {", ".join(ALLOWED_IMAGE_EXTENSIONS)}'
-                }), 400
-            
-            if audio_ext not in ALLOWED_AUDIO_EXTENSIONS:
-                return jsonify({
-                    'success': False,
-                    'error': f'Invalid audio format in URL. Allowed formats: {", ".join(ALLOWED_AUDIO_EXTENSIONS)}'
-                }), 400
-            
-            image_filename = f"{request_id}_image.{image_ext}"
-            audio_filename = f"{request_id}_audio.{audio_ext}"
-            
-            image_path = os.path.join(UPLOAD_FOLDER, image_filename)
-            audio_path = os.path.join(UPLOAD_FOLDER, audio_filename)
-            
-            # Download files from URLs
-            success, message = download_file_from_url(image_url, image_path, "image")
-            if not success:
-                return jsonify({
-                    'success': False,
-                    'error': message
-                }), 400
-            
-            success, message = download_file_from_url(audio_url, audio_path, "audio")
-            if not success:
-                cleanup_file(image_path)
-                return jsonify({
-                    'success': False,
-                    'error': message
-                }), 400
+
+            os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+            for i, image_url in enumerate(image_urls):
+                image_ext = get_file_extension_from_url(image_url, 'jpg')
+                if image_ext not in ALLOWED_IMAGE_EXTENSIONS:
+                    for path in image_paths:
+                        cleanup_file(path)
+                    return jsonify({
+                        'success': False,
+                        'error': f'Invalid image format in URL {i + 1}. Allowed formats: {", ".join(ALLOWED_IMAGE_EXTENSIONS)}'
+                    }), 400
+
+                image_filename = f"{request_id}_image_{i}.{image_ext}"
+                image_path = os.path.join(UPLOAD_FOLDER, image_filename)
+                success, message = download_file_from_url(image_url, image_path, "image")
+                if not success:
+                    for path in image_paths:
+                        cleanup_file(path)
+                    return jsonify({'success': False, 'error': message}), 400
+                image_paths.append(image_path)
+
+            for i, audio_url in enumerate(audio_urls):
+                audio_ext = get_file_extension_from_url(audio_url, 'mp3')
+                if audio_ext not in ALLOWED_AUDIO_EXTENSIONS:
+                    for path in image_paths + audio_paths:
+                        cleanup_file(path)
+                    return jsonify({
+                        'success': False,
+                        'error': f'Invalid audio format in URL {i + 1}. Allowed formats: {", ".join(ALLOWED_AUDIO_EXTENSIONS)}'
+                    }), 400
+
+                audio_filename = f"{request_id}_audio_{i}.{audio_ext}"
+                audio_path = os.path.join(UPLOAD_FOLDER, audio_filename)
+                success, message = download_file_from_url(audio_url, audio_path, "audio")
+                if not success:
+                    for path in image_paths + audio_paths:
+                        cleanup_file(path)
+                    return jsonify({'success': False, 'error': message}), 400
+                audio_paths.append(audio_path)
 
         # Additional validation using mimetypes
-        if not validate_file_type(image_path, 'image'):
-            cleanup_file(image_path)
-            cleanup_file(audio_path)
-            return jsonify({
-                'success': False,
-                'error': 'Invalid image file type'
-            }), 400
+        for i, image_path in enumerate(image_paths):
+            if not validate_file_type(image_path, 'image'):
+                for path in image_paths + audio_paths:
+                    cleanup_file(path)
+                return jsonify({
+                    'success': False,
+                    'error': f'Invalid image file type for image {i + 1}'
+                }), 400
 
-        if not validate_file_type(audio_path, 'audio'):
-            cleanup_file(image_path)
-            cleanup_file(audio_path)
-            return jsonify({
-                'success': False,
-                'error': 'Invalid audio file type'
-            }), 400
+        for i, audio_path in enumerate(audio_paths):
+            if not validate_file_type(audio_path, 'audio'):
+                for path in image_paths + audio_paths:
+                    cleanup_file(path)
+                return jsonify({
+                    'success': False,
+                    'error': f'Invalid audio file type for audio {i + 1}'
+                }), 400
 
         # Generate output filename
         output_filename = f"{request_id}_merged_video.mp4"
@@ -2259,7 +2523,14 @@ def merge_image_audio():
         db.session.remove()
         
         # Create video using FFMPEG
-        success, message = create_video_with_ffmpeg(image_path, audio_path, output_path)
+        success, message = create_slideshow_with_ffmpeg(
+            image_paths,
+            audio_paths,
+            output_path,
+            transition_effect=transition_effect,
+            transition_duration=transition_duration,
+            dimensions=dimensions,
+        )
         
         # Log file creation status
         if success:
@@ -2272,8 +2543,8 @@ def merge_image_audio():
                 message = "Video processing completed but output file was not created"
 
         # Cleanup uploaded files
-        cleanup_file(image_path)
-        cleanup_file(audio_path)
+        for path in image_paths + audio_paths:
+            cleanup_file(path)
 
         if success:
             # Upload to storage for persistence
@@ -2326,10 +2597,8 @@ def merge_image_audio():
     except Exception as e:
         logging.error(f"Error in merge_image_audio: {str(e)}")
         # Cleanup files if an error occurred
-        if image_path:
-            cleanup_file(image_path)
-        if audio_path:
-            cleanup_file(audio_path)
+        for path in image_paths + audio_paths:
+            cleanup_file(path)
         return jsonify({
             'success': False,
             'error': f'Server error: {str(e)}'
@@ -3737,46 +4006,103 @@ def process_job_async(job_id):
 
 def process_merge_image_audio_job(job, input_data):
     """Process merge_image_audio job"""
+    image_paths = []
+    audio_paths = []
     try:
         request_id = str(uuid.uuid4())
-        image_path = ""
-        audio_path = ""
-        
-        # Handle URL-based inputs
-        if 'image' in input_data and 'audio' in input_data:
-            image_url = input_data['image']
-            audio_url = input_data['audio']
-            
-            # Generate file paths
-            image_ext = image_url.split('.')[-1].lower() if '.' in image_url else 'jpg'
-            audio_ext = audio_url.split('.')[-1].lower() if '.' in audio_url else 'mp3'
-            
-            image_filename = f"{request_id}_image.{image_ext}"
-            audio_filename = f"{request_id}_audio.{audio_ext}"
-            
+
+        image_urls = normalize_url_list(input_data, 'image_urls', 'image')
+        audio_urls = normalize_url_list(input_data, 'audio_urls', 'audio')
+
+        if not image_urls or not audio_urls:
+            return {
+                'success': False,
+                'error': 'image_urls and audio_urls arrays are required. Backward-compatible image and audio strings are also supported.'
+            }
+
+        if len(image_urls) != len(audio_urls):
+            return {'success': False, 'error': 'image_urls and audio_urls must contain the same number of items'}
+
+        transition_effect, transition_duration, transition_error = normalize_transition_options(
+            input_data,
+            len(image_urls)
+        )
+        if transition_error:
+            return {'success': False, 'error': transition_error}
+
+        dimensions = input_data.get('dimensions')
+        if dimensions and parse_dimensions(dimensions) is None:
+            return {'success': False, 'error': "Invalid dimensions format. Use format like '1280x720'"}
+
+        os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+        for i, image_url in enumerate(image_urls):
+            image_ext = get_file_extension_from_url(image_url, 'jpg')
+            if image_ext not in ALLOWED_IMAGE_EXTENSIONS:
+                for path in image_paths:
+                    cleanup_file(path)
+                return {
+                    'success': False,
+                    'error': f'Invalid image format in URL {i + 1}. Allowed formats: {", ".join(ALLOWED_IMAGE_EXTENSIONS)}'
+                }
+
+            image_filename = f"{request_id}_image_{i}.{image_ext}"
             image_path = os.path.join(UPLOAD_FOLDER, image_filename)
-            audio_path = os.path.join(UPLOAD_FOLDER, audio_filename)
-            
-            # Download files
             success, message = download_file_from_url(image_url, image_path, "image")
             if not success:
+                for path in image_paths:
+                    cleanup_file(path)
                 return {'success': False, 'error': message}
-            
+            image_paths.append(image_path)
+
+        for i, audio_url in enumerate(audio_urls):
+            audio_ext = get_file_extension_from_url(audio_url, 'mp3')
+            if audio_ext not in ALLOWED_AUDIO_EXTENSIONS:
+                for path in image_paths + audio_paths:
+                    cleanup_file(path)
+                return {
+                    'success': False,
+                    'error': f'Invalid audio format in URL {i + 1}. Allowed formats: {", ".join(ALLOWED_AUDIO_EXTENSIONS)}'
+                }
+
+            audio_filename = f"{request_id}_audio_{i}.{audio_ext}"
+            audio_path = os.path.join(UPLOAD_FOLDER, audio_filename)
             success, message = download_file_from_url(audio_url, audio_path, "audio")
             if not success:
-                cleanup_file(image_path)
+                for path in image_paths + audio_paths:
+                    cleanup_file(path)
                 return {'success': False, 'error': message}
+            audio_paths.append(audio_path)
+
+        for i, image_path in enumerate(image_paths):
+            if not validate_file_type(image_path, 'image'):
+                for path in image_paths + audio_paths:
+                    cleanup_file(path)
+                return {'success': False, 'error': f'Invalid image file type for image {i + 1}'}
+
+        for i, audio_path in enumerate(audio_paths):
+            if not validate_file_type(audio_path, 'audio'):
+                for path in image_paths + audio_paths:
+                    cleanup_file(path)
+                return {'success': False, 'error': f'Invalid audio file type for audio {i + 1}'}
         
         # Generate output filename
         output_filename = f"{request_id}_merged_output.mp4"
         output_path = os.path.join(OUTPUT_FOLDER, output_filename)
         
         # Create video using FFMPEG
-        success, message = create_video_with_ffmpeg(image_path, audio_path, output_path)
+        success, message = create_slideshow_with_ffmpeg(
+            image_paths,
+            audio_paths,
+            output_path,
+            transition_effect=transition_effect,
+            transition_duration=transition_duration,
+            dimensions=dimensions,
+        )
         
         # Cleanup input files
-        cleanup_file(image_path)
-        cleanup_file(audio_path)
+        for path in image_paths + audio_paths:
+            cleanup_file(path)
         
         if success:
             # Fix for Replit: Generate proper URL based on environment
@@ -3800,6 +4126,8 @@ def process_merge_image_audio_job(job, input_data):
             
     except Exception as e:
         logging.error(f"Error in process_merge_image_audio_job: {str(e)}")
+        for path in image_paths + audio_paths:
+            cleanup_file(path)
         return {'success': False, 'error': f'Server error: {str(e)}'}
 
 def process_merge_videos_job(job, input_data):
