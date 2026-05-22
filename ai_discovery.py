@@ -12,18 +12,69 @@ ENDPOINTS = [
         "method": "POST",
         "path": "/api/merge_image_audio",
         "summary": "Create an MP4 video from image/audio pairs.",
-        "description": "Combines one or more image/audio pairs. Each image is shown for the duration of its matching audio file, then the next image is displayed when the next audio begins. Optional image transitions are supported for multi-pair JSON requests. Multipart form requests can upload image and audio files.",
+        "description": "Combines one or more image/audio pairs. Each image is shown for the duration of its matching audio file, then the next image is displayed when the next audio begins. JSON requests should use image_urls and audio_urls arrays for multi-pair videos, or legacy image and audio strings for a single pair. Optional image transitions are supported.",
         "content_type": "application/json or multipart/form-data",
         "parameters": [
-            {"name": "image_urls", "type": "array[string]", "required": True, "description": "Image URLs for JSON requests. Must have the same item count as audio_urls."},
-            {"name": "audio_urls", "type": "array[string]", "required": True, "description": "Audio URLs for JSON requests. Each audio duration controls the paired image duration."},
-            {"name": "image", "type": "string", "required": False, "description": "Backward-compatible single image URL for JSON requests, or image file in multipart form data."},
-            {"name": "audio", "type": "string", "required": False, "description": "Backward-compatible single audio URL for JSON requests, or audio file in multipart form data."},
+            {"name": "image_urls", "type": "array[string]", "required": False, "description": "Image URLs for multi-pair JSON requests. Use with audio_urls; both arrays must have the same item count."},
+            {"name": "audio_urls", "type": "array[string]", "required": False, "description": "Audio URLs for multi-pair JSON requests. Each audio duration controls the paired image duration."},
+            {"name": "image", "type": "string", "required": False, "description": "Backward-compatible single image URL for JSON requests, or image file in multipart form data. Use with audio for one image/audio pair."},
+            {"name": "audio", "type": "string", "required": False, "description": "Backward-compatible single audio URL for JSON requests, or audio file in multipart form data. Use with image for one image/audio pair."},
             {"name": "transition_effect", "type": "string", "required": False, "description": "Optional image transition. Values include none, fade, wipeleft, wiperight, wipeup, wipedown, slideleft, slideright, slideup, slidedown, circlecrop, rectcrop, distance, fadeblack, fadewhite, radial, smoothleft, smoothright, smoothup, smoothdown."},
             {"name": "transition_duration", "type": "number", "required": False, "description": "Transition duration in seconds. Defaults to 0.5 when transition_effect is set. Maximum 5."},
             {"name": "dimensions", "type": "string", "required": False, "description": "Optional output dimensions such as 1280x720 or 1080x1920."},
             {"name": "async", "type": "boolean", "required": False, "description": "Return a job_id immediately and process in the background."},
         ],
+        "request_schema": {
+            "type": "object",
+            "oneOf": [
+                {"required": ["image_urls", "audio_urls"]},
+                {"required": ["image", "audio"]},
+            ],
+            "properties": {
+                "image_urls": {
+                    "type": "array",
+                    "items": {"type": "string", "format": "uri"},
+                    "minItems": 1,
+                    "description": "Image URLs for multi-pair requests. Must align by index with audio_urls.",
+                },
+                "audio_urls": {
+                    "type": "array",
+                    "items": {"type": "string", "format": "uri"},
+                    "minItems": 1,
+                    "description": "Audio URLs for multi-pair requests. Must align by index with image_urls.",
+                },
+                "image": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "Legacy single image URL.",
+                },
+                "audio": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "Legacy single audio URL.",
+                },
+                "transition_effect": {
+                    "type": "string",
+                    "enum": ["none", "fade", "wipeleft", "wiperight", "wipeup", "wipedown", "slideleft", "slideright", "slideup", "slidedown", "circlecrop", "rectcrop", "distance", "fadeblack", "fadewhite", "radial", "smoothleft", "smoothright", "smoothup", "smoothdown"],
+                    "description": "Optional transition between image changes.",
+                },
+                "transition_duration": {
+                    "type": "number",
+                    "minimum": 0.1,
+                    "maximum": 5,
+                    "description": "Transition duration in seconds. Defaults to 0.5 when transition_effect is set.",
+                },
+                "dimensions": {
+                    "type": "string",
+                    "pattern": "^\\d+x\\d+$",
+                    "description": "Optional output dimensions such as 1280x720 or 1080x1920.",
+                },
+                "async": {
+                    "type": "boolean",
+                    "description": "Return a job_id immediately and process in the background.",
+                },
+            },
+        },
         "example": {
             "image_urls": ["https://example.com/intro.jpg", "https://example.com/chapter-1.jpg"],
             "audio_urls": ["https://example.com/intro.mp3", "https://example.com/chapter-1.mp3"],
@@ -615,15 +666,18 @@ def generate_openapi_spec():
                 {"name": "job_id", "in": "path", "required": True, "schema": {"type": "string"}, "description": "Async job ID."},
             ]
         else:
+            schema = endpoint.get("request_schema")
+            if not schema:
+                schema = {
+                    "type": "object",
+                    "required": required,
+                    "properties": properties,
+                }
             operation["requestBody"] = {
                 "required": True,
                 "content": {
                     "application/json": {
-                        "schema": {
-                            "type": "object",
-                            "required": required,
-                            "properties": properties,
-                        },
+                        "schema": schema,
                         "example": endpoint.get("example") or {},
                     }
                 },

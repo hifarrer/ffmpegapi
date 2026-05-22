@@ -339,25 +339,82 @@
                         <div id="imageAudioCollapse" class="accordion-collapse collapse show" 
                              aria-labelledby="imageAudioHeading" data-bs-parent="#videoProcessingAccordion">
                             <div class="accordion-body">
-                                <form id="imageAudioForm" enctype="multipart/form-data">
-                                    <div class="row">
-                                        <div class="col-md-6 mb-4">
-                                            <label for="imageFile" class="form-label">
-                                                <i class="fas fa-image me-2"></i>
-                                                Select Image
-                                            </label>
-                                            <input type="file" class="form-control" id="imageFile" name="image" 
-                                                   accept=".png,.jpg,.jpeg" required>
-                                            <div class="form-text">Supported formats: PNG, JPG, JPEG</div>
+                                <form id="imageAudioForm">
+                                    <div class="mb-4">
+                                        <label class="form-label">
+                                            <i class="fas fa-layer-group me-2"></i>
+                                            Image & Audio URL Pairs
+                                        </label>
+                                        <div id="imageAudioPairsContainer">
+                                            <div class="row g-2 align-items-start image-audio-pair mb-2">
+                                                <div class="col-md-5">
+                                                    <input type="url" class="form-control image-audio-image-url" placeholder="https://example.com/image-1.jpg">
+                                                    <div class="form-text">PNG, JPG, JPEG</div>
+                                                </div>
+                                                <div class="col-md-5">
+                                                    <input type="url" class="form-control image-audio-audio-url" placeholder="https://example.com/audio-1.mp3">
+                                                    <div class="form-text">MP3, WAV, M4A</div>
+                                                </div>
+                                                <div class="col-md-2 d-grid">
+                                                    <button type="button" class="btn btn-outline-danger image-audio-remove-pair" disabled>
+                                                        <i class="fas fa-times"></i>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            <div class="row g-2 align-items-start image-audio-pair mb-2">
+                                                <div class="col-md-5">
+                                                    <input type="url" class="form-control image-audio-image-url" placeholder="https://example.com/image-2.jpg">
+                                                    <div class="form-text">PNG, JPG, JPEG</div>
+                                                </div>
+                                                <div class="col-md-5">
+                                                    <input type="url" class="form-control image-audio-audio-url" placeholder="https://example.com/audio-2.mp3">
+                                                    <div class="form-text">MP3, WAV, M4A</div>
+                                                </div>
+                                                <div class="col-md-2 d-grid">
+                                                    <button type="button" class="btn btn-outline-danger image-audio-remove-pair">
+                                                        <i class="fas fa-times"></i>
+                                                    </button>
+                                                </div>
+                                            </div>
                                         </div>
-                                        <div class="col-md-6 mb-4">
-                                            <label for="audioFile" class="form-label">
-                                                <i class="fas fa-music me-2"></i>
-                                                Select Audio
+                                        <button type="button" class="btn btn-outline-secondary btn-sm" id="addImageAudioPairBtn">
+                                            <i class="fas fa-plus me-2"></i>
+                                            Add Another Pair
+                                        </button>
+                                        <div class="form-text">Each image is shown for the duration of the audio URL next to it.</div>
+                                    </div>
+
+                                    <div class="row">
+                                        <div class="col-md-4 mb-4">
+                                            <label for="imageAudioTransitionEffect" class="form-label">
+                                                <i class="fas fa-wand-magic-sparkles me-2"></i>
+                                                Transition
                                             </label>
-                                            <input type="file" class="form-control" id="audioFile" name="audio" 
-                                                   accept=".mp3,.wav,.m4a" required>
-                                            <div class="form-text">Supported formats: MP3, WAV, M4A</div>
+                                            <select class="form-select" id="imageAudioTransitionEffect">
+                                                <option value="none">None</option>
+                                                <option value="fade">Fade</option>
+                                                <option value="wipeleft">Wipe Left</option>
+                                                <option value="wiperight">Wipe Right</option>
+                                                <option value="slideleft">Slide Left</option>
+                                                <option value="slideright">Slide Right</option>
+                                                <option value="smoothleft">Smooth Left</option>
+                                                <option value="smoothright">Smooth Right</option>
+                                                <option value="circlecrop">Circle Crop</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-md-4 mb-4">
+                                            <label for="imageAudioTransitionDuration" class="form-label">
+                                                <i class="fas fa-clock me-2"></i>
+                                                Transition Seconds
+                                            </label>
+                                            <input type="number" class="form-control" id="imageAudioTransitionDuration" min="0.1" max="5" step="0.1" value="0.5">
+                                        </div>
+                                        <div class="col-md-4 mb-4">
+                                            <label for="imageAudioDimensions" class="form-label">
+                                                <i class="fas fa-expand me-2"></i>
+                                                Output Dimensions
+                                            </label>
+                                            <input type="text" class="form-control" id="imageAudioDimensions" placeholder="1280x720" pattern="\d+x\d+">
                                         </div>
                                     </div>
 

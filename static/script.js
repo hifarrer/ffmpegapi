@@ -34,6 +34,7 @@ class VideoMerger {
         this.imageAudioDownloadBtn = document.getElementById('imageAudioDownloadBtn');
         this.imageAudioCleanupBtn = document.getElementById('imageAudioCleanupBtn');
         this.imageAudioResetBtn = document.getElementById('imageAudioResetBtn');
+        this.addImageAudioPairBtn = document.getElementById('addImageAudioPairBtn');
         this.imageAudioCurrentFilename = null;
 
         // Event listeners for Image & Audio tab
@@ -42,14 +43,9 @@ class VideoMerger {
             this.handleImageAudioSubmit();
         });
 
-        document.getElementById('imageFile').addEventListener('change', () => {
-            this.validateImageAudioFiles();
+        this.addImageAudioPairBtn.addEventListener('click', () => {
+            this.addImageAudioPairInput();
         });
-
-        document.getElementById('audioFile').addEventListener('change', () => {
-            this.validateImageAudioFiles();
-        });
-
 
         this.imageAudioCleanupBtn.addEventListener('click', () => {
             this.handleImageAudioCleanup();
@@ -59,6 +55,7 @@ class VideoMerger {
             this.resetImageAudioForm();
         });
 
+        this.setupImageAudioPairEventListeners();
         this.validateImageAudioFiles();
     }
 
@@ -159,13 +156,9 @@ class VideoMerger {
     }
 
     validateImageAudioFiles() {
-        const imageFile = document.getElementById('imageFile').files[0];
-        const audioFile = document.getElementById('audioFile').files[0];
-
-        this.imageAudioSubmitBtn.disabled = !imageFile || !audioFile;
-
-        this.displayFileInfo('imageFile', imageFile);
-        this.displayFileInfo('audioFile', audioFile);
+        const pairs = this.getImageAudioPairs();
+        const allRowsComplete = pairs.every(pair => pair.imageUrl && pair.audioUrl);
+        this.imageAudioSubmitBtn.disabled = pairs.length === 0 || !allRowsComplete;
     }
 
     displayFileInfo(inputId, file) {
@@ -198,26 +191,45 @@ class VideoMerger {
     }
 
     async handleImageAudioSubmit() {
-        const formData = new FormData(this.imageAudioForm);
-        
-        const imageFile = document.getElementById('imageFile').files[0];
-        const audioFile = document.getElementById('audioFile').files[0];
-        
-        const maxSize = 100 * 1024 * 1024; // 100MB
-        
-        if (imageFile.size > maxSize) {
-            this.showImageAudioAlert('danger', 'Image file is too large. Maximum size is 100MB.');
-            return;
-        }
-        
-        if (audioFile.size > maxSize) {
-            this.showImageAudioAlert('danger', 'Audio file is too large. Maximum size is 100MB.');
+        const pairs = this.getImageAudioPairs();
+
+        if (pairs.length === 0) {
+            this.showImageAudioAlert('danger', 'At least one image/audio URL pair is required.');
             return;
         }
 
-        // Add API key to form data
-        if (window.API_KEY) {
-            formData.append('api_key', window.API_KEY);
+        const incompletePair = pairs.find(pair => !pair.imageUrl || !pair.audioUrl);
+        if (incompletePair) {
+            this.showImageAudioAlert('danger', 'Every row must include both an image URL and an audio URL.');
+            return;
+        }
+
+        const invalidPair = pairs.find(pair => !this.isValidUrl(pair.imageUrl) || !this.isValidUrl(pair.audioUrl));
+        if (invalidPair) {
+            this.showImageAudioAlert('danger', 'All image and audio values must be valid http or https URLs.');
+            return;
+        }
+
+        const requestData = {
+            image_urls: pairs.map(pair => pair.imageUrl),
+            audio_urls: pairs.map(pair => pair.audioUrl)
+        };
+
+        const transitionEffect = document.getElementById('imageAudioTransitionEffect').value;
+        if (transitionEffect && transitionEffect !== 'none') {
+            requestData.transition_effect = transitionEffect;
+
+            const transitionDuration = parseFloat(document.getElementById('imageAudioTransitionDuration').value);
+            if (!transitionDuration || transitionDuration <= 0 || transitionDuration > 5) {
+                this.showImageAudioAlert('danger', 'Transition seconds must be greater than 0 and no more than 5.');
+                return;
+            }
+            requestData.transition_duration = transitionDuration;
+        }
+
+        const dimensions = document.getElementById('imageAudioDimensions').value.trim();
+        if (dimensions) {
+            requestData.dimensions = dimensions;
         }
 
         this.setImageAudioLoadingState(true);
@@ -228,9 +240,10 @@ class VideoMerger {
             const response = await fetch('/api/merge_image_audio', {
                 method: 'POST',
                 headers: {
+                    'Content-Type': 'application/json',
                     'X-API-Key': window.API_KEY || ''
                 },
-                body: formData
+                body: JSON.stringify(requestData)
             });
 
             const result = await response.json();
@@ -247,6 +260,69 @@ class VideoMerger {
         } finally {
             this.setImageAudioLoadingState(false);
         }
+    }
+
+    getImageAudioPairs() {
+        return Array.from(document.querySelectorAll('.image-audio-pair'))
+            .map(row => ({
+                imageUrl: row.querySelector('.image-audio-image-url').value.trim(),
+                audioUrl: row.querySelector('.image-audio-audio-url').value.trim()
+            }))
+            .filter(pair => pair.imageUrl || pair.audioUrl);
+    }
+
+    addImageAudioPairInput() {
+        const container = document.getElementById('imageAudioPairsContainer');
+        const pairNumber = document.querySelectorAll('.image-audio-pair').length + 1;
+        const row = document.createElement('div');
+        row.className = 'row g-2 align-items-start image-audio-pair mb-2';
+        row.innerHTML = `
+            <div class="col-md-5">
+                <input type="url" class="form-control image-audio-image-url" placeholder="https://example.com/image-${pairNumber}.jpg">
+                <div class="form-text">PNG, JPG, JPEG</div>
+            </div>
+            <div class="col-md-5">
+                <input type="url" class="form-control image-audio-audio-url" placeholder="https://example.com/audio-${pairNumber}.mp3">
+                <div class="form-text">MP3, WAV, M4A</div>
+            </div>
+            <div class="col-md-2 d-grid">
+                <button type="button" class="btn btn-outline-danger image-audio-remove-pair">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+        `;
+        container.appendChild(row);
+        this.setupImageAudioPairEventListeners();
+        this.validateImageAudioFiles();
+    }
+
+    setupImageAudioPairEventListeners() {
+        document.querySelectorAll('.image-audio-remove-pair').forEach(btn => {
+            if (!btn.dataset.bound) {
+                btn.addEventListener('click', (e) => {
+                    if (document.querySelectorAll('.image-audio-pair').length > 1) {
+                        e.target.closest('.image-audio-pair').remove();
+                        this.setupImageAudioPairEventListeners();
+                        this.validateImageAudioFiles();
+                    }
+                });
+                btn.dataset.bound = 'true';
+            }
+        });
+
+        document.querySelectorAll('.image-audio-image-url, .image-audio-audio-url').forEach(input => {
+            if (!input.dataset.bound) {
+                input.addEventListener('input', () => {
+                    this.validateImageAudioFiles();
+                });
+                input.dataset.bound = 'true';
+            }
+        });
+
+        const removeButtons = document.querySelectorAll('.image-audio-remove-pair');
+        removeButtons.forEach(btn => {
+            btn.disabled = removeButtons.length <= 1;
+        });
     }
 
     async handleVideoLoopSubmit() {
@@ -525,9 +601,9 @@ class VideoMerger {
             this.imageAudioSubmitBtn.classList.add('loading');
             this.imageAudioProgressContainer.style.display = 'block';
         } else {
-            this.imageAudioSubmitBtn.disabled = false;
             this.imageAudioSubmitBtn.classList.remove('loading');
             this.imageAudioProgressContainer.style.display = 'none';
+            this.validateImageAudioFiles();
         }
     }
 
@@ -621,14 +697,47 @@ class VideoMerger {
 
     resetImageAudioForm() {
         this.imageAudioForm.reset();
+        const container = document.getElementById('imageAudioPairsContainer');
+        container.innerHTML = `
+            <div class="row g-2 align-items-start image-audio-pair mb-2">
+                <div class="col-md-5">
+                    <input type="url" class="form-control image-audio-image-url" placeholder="https://example.com/image-1.jpg">
+                    <div class="form-text">PNG, JPG, JPEG</div>
+                </div>
+                <div class="col-md-5">
+                    <input type="url" class="form-control image-audio-audio-url" placeholder="https://example.com/audio-1.mp3">
+                    <div class="form-text">MP3, WAV, M4A</div>
+                </div>
+                <div class="col-md-2 d-grid">
+                    <button type="button" class="btn btn-outline-danger image-audio-remove-pair" disabled>
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="row g-2 align-items-start image-audio-pair mb-2">
+                <div class="col-md-5">
+                    <input type="url" class="form-control image-audio-image-url" placeholder="https://example.com/image-2.jpg">
+                    <div class="form-text">PNG, JPG, JPEG</div>
+                </div>
+                <div class="col-md-5">
+                    <input type="url" class="form-control image-audio-audio-url" placeholder="https://example.com/audio-2.mp3">
+                    <div class="form-text">MP3, WAV, M4A</div>
+                </div>
+                <div class="col-md-2 d-grid">
+                    <button type="button" class="btn btn-outline-danger image-audio-remove-pair">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+            </div>
+        `;
+        document.getElementById('imageAudioTransitionEffect').value = 'none';
+        document.getElementById('imageAudioTransitionDuration').value = '0.5';
+        document.getElementById('imageAudioDimensions').value = '';
+        this.setupImageAudioPairEventListeners();
         this.hideImageAudioAlert();
         this.hideImageAudioResult();
         this.validateImageAudioFiles();
         this.imageAudioCurrentFilename = null;
-        
-        document.querySelectorAll('.file-info').forEach(info => {
-            info.remove();
-        });
     }
 
     resetVideosForm() {
