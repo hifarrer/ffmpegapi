@@ -612,7 +612,8 @@ def create_slideshow_with_ffmpeg(
                     f"zoompan=z='min(1+on*0.0005,1.10)':"
                     f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
                     f"d=1:s={target_width}x{target_height}:fps=30,"
-                    f"trim=duration={image_duration:.3f},setpts=PTS-STARTPTS,"
+                    f"trim=duration={image_duration:.3f},"
+                    f"setpts=PTS-STARTPTS,fps=30,settb=AVTB,"
                     f"format=yuv420p[v{i}]"
                 )
             else:
@@ -620,7 +621,7 @@ def create_slideshow_with_ffmpeg(
                     f"[{i}:v:0]scale={target_width}:{target_height}:"
                     f"force_original_aspect_ratio=decrease,"
                     f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2,"
-                    f"setsar=1,fps=30,format=yuv420p[v{i}]"
+                    f"setsar=1,fps=30,settb=AVTB,format=yuv420p[v{i}]"
                 )
 
         if use_transition:
