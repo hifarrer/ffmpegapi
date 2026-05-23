@@ -610,7 +610,7 @@ def create_slideshow_with_ffmpeg(
                     f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2,"
                     f"setsar=1,"
                     f"zoompan=z='min(1+on*0.0005,1.10)':"
-                    f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+                    f"x='trunc((iw-iw/zoom)/4)*2':y='trunc((ih-ih/zoom)/4)*2':"
                     f"d=1:s={target_width}x{target_height}:fps=30,"
                     f"trim=duration={image_duration:.3f},"
                     f"setpts=PTS-STARTPTS,fps=30,settb=AVTB,"
