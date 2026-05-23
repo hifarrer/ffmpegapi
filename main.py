@@ -604,14 +604,19 @@ def create_slideshow_with_ffmpeg(
                 image_duration += transition_duration
 
             if zoom_effect:
+                zoom_speed = 0.10 / max(image_duration, 0.001)
                 filter_parts.append(
                     f"[{i}:v:0]scale={target_width}:{target_height}:"
                     f"force_original_aspect_ratio=decrease,"
                     f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2,"
-                    f"setsar=1,"
-                    f"zoompan=z='min(1+on*0.0005,1.10)':"
-                    f"x='trunc((iw-iw/zoom)/4)*2':y='trunc((ih-ih/zoom)/4)*2':"
-                    f"d=1:s={target_width}x{target_height}:fps=30,"
+                    f"setsar=1,fps=30,"
+                    f"scale="
+                    f"w='ceil({target_width}*(1+min(t*{zoom_speed:.8f},0.10))/2)*2':"
+                    f"h='ceil({target_height}*(1+min(t*{zoom_speed:.8f},0.10))/2)*2':"
+                    f"eval=frame,"
+                    f"crop={target_width}:{target_height}:"
+                    f"x='trunc((in_w-out_w)/4)*2':"
+                    f"y='trunc((in_h-out_h)/4)*2',"
                     f"trim=duration={image_duration:.3f},"
                     f"setpts=PTS-STARTPTS,fps=30,settb=AVTB,"
                     f"format=yuv420p[v{i}]"
