@@ -212,7 +212,8 @@ class VideoMerger {
 
         const requestData = {
             image_urls: pairs.map(pair => pair.imageUrl),
-            audio_urls: pairs.map(pair => pair.audioUrl)
+            audio_urls: pairs.map(pair => pair.audioUrl),
+            zoom_effect: document.getElementById('imageAudioZoomEffect').checked
         };
 
         const transitionEffect = document.getElementById('imageAudioTransitionEffect').value;
@@ -733,6 +734,7 @@ class VideoMerger {
         document.getElementById('imageAudioTransitionEffect').value = 'none';
         document.getElementById('imageAudioTransitionDuration').value = '0.5';
         document.getElementById('imageAudioDimensions').value = '';
+        document.getElementById('imageAudioZoomEffect').checked = true;
         this.setupImageAudioPairEventListeners();
         this.hideImageAudioAlert();
         this.hideImageAudioResult();

@@ -486,6 +486,12 @@
                                                 <td>Optional output dimensions, such as <code>1280x720</code> or <code>1080x1920</code>. Images are scaled and padded to fit.</td>
                                             </tr>
                                             <tr>
+                                                <td><code>zoom_effect</code></td>
+                                                <td>Boolean</td>
+                                                <td>No</td>
+                                                <td>Slowly zoom each image while its paired audio plays. Default: <code>true</code>.</td>
+                                            </tr>
+                                            <tr>
                                                 <td><code>async</code></td>
                                                 <td>Boolean</td>
                                                 <td>No</td>
@@ -516,6 +522,7 @@
     "transition_effect": "fade",
     "transition_duration": 0.75,
     "dimensions": "1280x720",
+    "zoom_effect": true,
     "async": true
   }'</code></pre>
                                 </div>
@@ -3787,7 +3794,8 @@ if (result.success) {
       "https://example.com/audio-1.mp3",
       "https://example.com/audio-2.mp3"
     ],
-    "transition_effect": "fade"
+    "transition_effect": "fade",
+    "zoom_effect": true
   }'</code></pre>
                             </div>
 
@@ -3849,7 +3857,8 @@ data = {
         "https://example.com/audio-1.mp3",
         "https://example.com/audio-2.mp3"
     ],
-    "transition_effect": "fade"
+    "transition_effect": "fade",
+    "zoom_effect": true
 }
 
 response = requests.post(url, headers=headers, json=data)
@@ -3954,7 +3963,8 @@ else:
         'https://example.com/audio-1.mp3',
         'https://example.com/audio-2.mp3'
     ],
-    transition_effect: 'fade'
+    transition_effect: 'fade',
+    zoom_effect: true
 };
 
 const response = await fetch('https://www.ffmpegapi.net/api/merge_image_audio', {

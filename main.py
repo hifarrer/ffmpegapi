@@ -476,6 +476,24 @@ def normalize_url_list(data, plural_key, singular_key):
 
     return normalized
 
+def normalize_boolean_option(data, key, default=False):
+    """Validate a boolean option from JSON booleans or form string values."""
+    if key not in data:
+        return default, None
+
+    value = data.get(key)
+    if type(value) is bool:
+        return value, None
+
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == 'true':
+            return True, None
+        if normalized == 'false':
+            return False, None
+
+    return None, f"{key} must be true or false"
+
 def normalize_transition_options(data, num_items):
     """Validate optional image transition settings for multi image/audio merge."""
     effect = (data.get('transition_effect') or data.get('transition') or 'none')
@@ -533,6 +551,7 @@ def create_slideshow_with_ffmpeg(
     transition_effect='none',
     transition_duration=0,
     dimensions=None,
+    zoom_effect=True,
 ):
     """Create a video where each image is shown for its paired audio duration."""
     try:
@@ -542,7 +561,7 @@ def create_slideshow_with_ffmpeg(
         if not image_paths:
             return False, "At least one image and one audio file are required"
 
-        if len(image_paths) == 1 and not dimensions:
+        if len(image_paths) == 1 and not dimensions and not zoom_effect:
             return create_video_with_ffmpeg(image_paths[0], audio_paths[0], output_path)
 
         target_dimensions = parse_dimensions(dimensions)
@@ -573,19 +592,36 @@ def create_slideshow_with_ffmpeg(
             image_duration = audio_durations[i]
             if use_transition and i < len(image_paths) - 1:
                 image_duration += transition_duration
-            inputs.extend(['-loop', '1', '-t', f"{image_duration:.3f}", '-i', image_path])
+            inputs.extend(['-loop', '1', '-framerate', '30', '-t', f"{image_duration:.3f}", '-i', image_path])
 
         for audio_path in audio_paths:
             inputs.extend(['-i', audio_path])
 
         filter_parts = []
         for i in range(len(image_paths)):
-            filter_parts.append(
-                f"[{i}:v:0]scale={target_width}:{target_height}:"
-                f"force_original_aspect_ratio=decrease,"
-                f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2,"
-                f"setsar=1,fps=30,format=yuv420p[v{i}]"
-            )
+            image_duration = audio_durations[i]
+            if use_transition and i < len(image_paths) - 1:
+                image_duration += transition_duration
+
+            if zoom_effect:
+                filter_parts.append(
+                    f"[{i}:v:0]scale={target_width}:{target_height}:"
+                    f"force_original_aspect_ratio=decrease,"
+                    f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2,"
+                    f"setsar=1,"
+                    f"zoompan=z='min(1+on*0.0005,1.10)':"
+                    f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+                    f"d=1:s={target_width}x{target_height}:fps=30,"
+                    f"trim=duration={image_duration:.3f},setpts=PTS-STARTPTS,"
+                    f"format=yuv420p[v{i}]"
+                )
+            else:
+                filter_parts.append(
+                    f"[{i}:v:0]scale={target_width}:{target_height}:"
+                    f"force_original_aspect_ratio=decrease,"
+                    f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2,"
+                    f"setsar=1,fps=30,format=yuv420p[v{i}]"
+                )
 
         if use_transition:
             current_label = "v0"
@@ -2315,6 +2351,7 @@ def merge_image_audio():
         transition_effect = 'none'
         transition_duration = 0
         dimensions = None
+        zoom_effect = True
         
         # Check if this is a file upload request (FormData) or JSON request (URLs)
         is_file_upload = bool(request.files)
@@ -2350,6 +2387,10 @@ def merge_image_audio():
             )
             if transition_error:
                 return jsonify({'success': False, 'error': transition_error}), 400
+
+            zoom_effect, zoom_error = normalize_boolean_option(request.form, 'zoom_effect', True)
+            if zoom_error:
+                return jsonify({'success': False, 'error': zoom_error}), 400
 
             dimensions = request.form.get('dimensions')
 
@@ -2415,6 +2456,10 @@ def merge_image_audio():
             )
             if transition_error:
                 return jsonify({'success': False, 'error': transition_error}), 400
+
+            zoom_effect, zoom_error = normalize_boolean_option(data, 'zoom_effect', True)
+            if zoom_error:
+                return jsonify({'success': False, 'error': zoom_error}), 400
 
             dimensions = data.get('dimensions')
             if dimensions and parse_dimensions(dimensions) is None:
@@ -2530,6 +2575,7 @@ def merge_image_audio():
             transition_effect=transition_effect,
             transition_duration=transition_duration,
             dimensions=dimensions,
+            zoom_effect=zoom_effect,
         )
         
         # Log file creation status
@@ -4030,6 +4076,10 @@ def process_merge_image_audio_job(job, input_data):
         if transition_error:
             return {'success': False, 'error': transition_error}
 
+        zoom_effect, zoom_error = normalize_boolean_option(input_data, 'zoom_effect', True)
+        if zoom_error:
+            return {'success': False, 'error': zoom_error}
+
         dimensions = input_data.get('dimensions')
         if dimensions and parse_dimensions(dimensions) is None:
             return {'success': False, 'error': "Invalid dimensions format. Use format like '1280x720'"}
@@ -4098,6 +4148,7 @@ def process_merge_image_audio_job(job, input_data):
             transition_effect=transition_effect,
             transition_duration=transition_duration,
             dimensions=dimensions,
+            zoom_effect=zoom_effect,
         )
         
         # Cleanup input files

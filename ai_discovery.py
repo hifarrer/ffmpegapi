@@ -12,7 +12,7 @@ ENDPOINTS = [
         "method": "POST",
         "path": "/api/merge_image_audio",
         "summary": "Create an MP4 video from image/audio pairs.",
-        "description": "Combines one or more image/audio pairs. Each image is shown for the duration of its matching audio file, then the next image is displayed when the next audio begins. JSON requests should use image_urls and audio_urls arrays for multi-pair videos, or legacy image and audio strings for a single pair. Optional image transitions are supported.",
+        "description": "Combines one or more image/audio pairs. Each image is shown for the duration of its matching audio file, then the next image is displayed when the next audio begins. JSON requests should use image_urls and audio_urls arrays for multi-pair videos, or legacy image and audio strings for a single pair. Optional image transitions and a default slow zoom effect are supported.",
         "content_type": "application/json or multipart/form-data",
         "parameters": [
             {"name": "image_urls", "type": "array[string]", "required": False, "description": "Image URLs for multi-pair JSON requests. Use with audio_urls; both arrays must have the same item count."},
@@ -22,6 +22,7 @@ ENDPOINTS = [
             {"name": "transition_effect", "type": "string", "required": False, "description": "Optional image transition. Values include none, fade, wipeleft, wiperight, wipeup, wipedown, slideleft, slideright, slideup, slidedown, circlecrop, rectcrop, distance, fadeblack, fadewhite, radial, smoothleft, smoothright, smoothup, smoothdown."},
             {"name": "transition_duration", "type": "number", "required": False, "description": "Transition duration in seconds. Defaults to 0.5 when transition_effect is set. Maximum 5."},
             {"name": "dimensions", "type": "string", "required": False, "description": "Optional output dimensions such as 1280x720 or 1080x1920."},
+            {"name": "zoom_effect", "type": "boolean", "required": False, "description": "Slowly zoom each image while its paired audio plays. Defaults to true."},
             {"name": "async", "type": "boolean", "required": False, "description": "Return a job_id immediately and process in the background."},
         ],
         "request_schema": {
@@ -69,6 +70,11 @@ ENDPOINTS = [
                     "pattern": "^\\d+x\\d+$",
                     "description": "Optional output dimensions such as 1280x720 or 1080x1920.",
                 },
+                "zoom_effect": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Slowly zoom each image while its paired audio plays.",
+                },
                 "async": {
                     "type": "boolean",
                     "description": "Return a job_id immediately and process in the background.",
@@ -81,6 +87,7 @@ ENDPOINTS = [
             "transition_effect": "fade",
             "transition_duration": 0.75,
             "dimensions": "1280x720",
+            "zoom_effect": True,
             "async": False,
         },
     },
@@ -520,7 +527,7 @@ def generate_docs_markdown(full=False):
 def generate_examples_markdown():
     examples = [
         ("Merge videos", "POST", "/api/merge_videos", {"video_urls": ["https://example.com/intro.mp4", "https://example.com/main.mp4"], "dimensions": "1920x1080"}),
-        ("Create a video from image and audio", "POST", "/api/merge_image_audio", {"image_urls": ["https://example.com/cover-1.jpg", "https://example.com/cover-2.jpg"], "audio_urls": ["https://example.com/audio-1.mp3", "https://example.com/audio-2.mp3"], "transition_effect": "fade"}),
+        ("Create a video from image and audio", "POST", "/api/merge_image_audio", {"image_urls": ["https://example.com/cover-1.jpg", "https://example.com/cover-2.jpg"], "audio_urls": ["https://example.com/audio-1.mp3", "https://example.com/audio-2.mp3"], "transition_effect": "fade", "zoom_effect": True}),
         ("Loop a video", "POST", "/api/video_loop", {"video_url": "https://example.com/clip.mp4", "number_of_loops": 3}),
         ("Add AI captions", "POST", "/api/videos/add-tiktok-captions", {"video_url": "https://example.com/video.mp4", "subtitle_style": "yellow-bg", "aspect_ratio": "9:16"}),
         ("Poll async job status", "GET", "/api/job/job_123/status", None),
