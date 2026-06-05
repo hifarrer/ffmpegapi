@@ -7,9 +7,11 @@ import threading
 import json
 import re
 import requests
+import random
+import secrets
 from datetime import datetime, timedelta
 from functools import wraps
-from flask import Flask, render_template, request, jsonify, send_from_directory, url_for, flash, redirect, Response, send_file
+from flask import Flask, render_template, request, jsonify, send_from_directory, url_for, flash, redirect, Response, send_file, abort
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, login_required, current_user
 from sqlalchemy.exc import OperationalError, PendingRollbackError
@@ -20,13 +22,14 @@ import mimetypes
 import resend
 import shutil
 
-from models import db, User, ApiKey, SubscriptionPlan, StripeSettings, UserSubscription, SiteSettings, Job, ApiLog, SITE_DEFAULT_API_KEY
+from models import db, User, ApiKey, SubscriptionPlan, StripeSettings, UserSubscription, SiteSettings, Job, ApiLog, BlogArticle, SITE_DEFAULT_API_KEY
 import time
 from forms import RegistrationForm, LoginForm, ApiKeyForm
 from auth_routes import auth
 from stripe_routes import stripe_bp
 from storage_utils import upload_to_storage, get_storage_download_url
 from ai_discovery import (
+    ENDPOINTS,
     docs_json_ld,
     generate_docs_markdown,
     generate_examples_markdown,
@@ -3575,80 +3578,310 @@ def plans():
     """Plans page - alias for pricing"""
     return redirect(url_for('pricing'))
 
-@app.route('/blog')
-def blog():
-    """Blog listing page"""
-    # Define blog articles (could be moved to database in the future)
-    articles = [
-        {
+def get_static_blog_articles(include_content=False):
+    """Return hand-written blog article metadata used before generated posts existed."""
+    articles = {
+        'best-tools-vibe-coding-2025': {
             'slug': 'best-tools-vibe-coding-2025',
             'title': 'Best Tools for Vibe Coding 2025: AI-Powered Developer Workflow',
             'description': 'Explore the best vibe coding tools in 2025 including Cursor, Claude, GitHub Copilot, and FFMPEG API for building modern applications faster.',
             'date': 'November 2025',
-            'author': 'FFMPEG API Team',
-            'image': '',
-            'keywords': 'vibe coding, cursor ai, claude ai, github copilot, ai coding tools 2025, developer tools'
-        },
-        {
-            'slug': 'best-video-editor-api-2025',
-            'title': 'Best Video Editor API 2025: Top Features for Developers',
-            'description': 'Discover the best video editor API of 2025 with powerful features like video merging, picture-in-picture, subtitle burning, and vertical video conversion for mobile platforms.',
-            'date': 'November 2025',
-            'author': 'FFMPEG API Team',
-            'image': '',
-            'keywords': 'best video editor api, video editing api 2025, video api for developers, automated video editing'
-        },
-        {
-            'slug': 'ffmpeg-api-guide',
-            'title': 'Complete Guide to FFMPEG API: Video Processing Made Simple',
-            'description': 'Discover how FFMPEG API simplifies video merging, audio processing, subtitle addition, and format conversion with easy-to-use REST endpoints.',
-            'date': 'November 2025',
-            'author': 'FFMPEG API Team',
-            'image': '',
-            'keywords': 'ffmpeg api, video processing api, video merger api, audio processing, subtitle api'
-        }
-    ]
-    return render_template('blog.html', articles=articles)
-
-@app.route('/blog/<slug>')
-def blog_article(slug):
-    """Individual blog article page"""
-    # Define articles (could be moved to database in the future)
-    articles = {
-        'best-tools-vibe-coding-2025': {
-            'title': 'Best Tools for Vibe Coding 2025: AI-Powered Developer Workflow',
-            'description': 'Explore the best vibe coding tools in 2025 including Cursor, Claude, GitHub Copilot, and FFMPEG API for building modern applications faster.',
-            'date': 'November 2025',
+            'date_iso': '2025-11-01',
             'author': 'FFMPEG API Team',
             'image': '',
             'keywords': 'vibe coding, vibe coding tools, cursor ai, claude ai, github copilot, ai coding tools 2025, developer tools, ai pair programming, code assistant, developer productivity tools, best coding tools 2025',
             'content_file': 'blog_vibe_coding_tools.html'
         },
         'best-video-editor-api-2025': {
+            'slug': 'best-video-editor-api-2025',
             'title': 'Best Video Editor API 2025: Top Features for Developers',
             'description': 'Discover the best video editor API of 2025 with powerful features like video merging, picture-in-picture, subtitle burning, and vertical video conversion for mobile platforms.',
             'date': 'November 2025',
+            'date_iso': '2025-11-01',
             'author': 'FFMPEG API Team',
             'image': '',
             'keywords': 'best video editor api, video editing api 2025, video api for developers, automated video editing, video processing api, cloud video editor api, rest api video editing, api video merger, programmatic video editing',
             'content_file': 'blog_best_video_editor_api.html'
         },
         'ffmpeg-api-guide': {
+            'slug': 'ffmpeg-api-guide',
             'title': 'Complete Guide to FFMPEG API: Video Processing Made Simple',
             'description': 'Discover how FFMPEG API simplifies video merging, audio processing, subtitle addition, and format conversion with easy-to-use REST endpoints.',
             'date': 'November 2025',
+            'date_iso': '2025-11-01',
             'author': 'FFMPEG API Team',
             'image': '',
             'keywords': 'ffmpeg api, video processing api, video merger api, audio processing, subtitle api, ffmpeg rest api, video api service',
             'content_file': 'blog_ffmpeg_api_guide.html'
         }
     }
-    
+    if include_content:
+        return articles
+    return [
+        {
+            key: value
+            for key, value in article.items()
+            if key != 'content_file'
+        }
+        for article in articles.values()
+    ]
+
+def get_published_generated_blog_articles():
+    return BlogArticle.query.filter_by(status='published').order_by(BlogArticle.created_at.desc()).all()
+
+def slugify_blog_title(title):
+    slug = re.sub(r'[^a-z0-9]+', '-', (title or '').lower()).strip('-')
+    return slug[:180].strip('-') or f'ffmpeg-api-guide-{uuid.uuid4().hex[:8]}'
+
+def blog_slug_exists(slug):
+    static_articles = get_static_blog_articles(include_content=True)
+    return slug in static_articles or BlogArticle.query.filter_by(slug=slug).first() is not None
+
+def unique_blog_slug(title):
+    base_slug = slugify_blog_title(title)
+    slug = base_slug
+    counter = 2
+    while blog_slug_exists(slug):
+        slug = f'{base_slug}-{counter}'
+        counter += 1
+    return slug
+
+BLOG_SEO_ANGLES = [
+    'best FFMPEG tool for developers',
+    'best video processing API for automation',
+    'best way to merge videos programmatically',
+    'how to automate video editing with an API',
+    'FFmpeg REST API for SaaS applications',
+    'cloud FFmpeg alternative for developers',
+    'programmatic video editing without managing servers',
+    'best API for social media video workflows',
+    'video automation tools for AI agents',
+    'fast media processing API for content pipelines',
+]
+
+def endpoint_for_blog_generation():
+    eligible = [endpoint for endpoint in ENDPOINTS if endpoint.get('operation_id') != 'getJobStatus']
+    return random.choice(eligible or ENDPOINTS)
+
+def normalize_generated_sections(sections):
+    normalized = []
+    if not isinstance(sections, list):
+        return normalized
+    for section in sections[:8]:
+        if not isinstance(section, dict):
+            continue
+        normalized.append({
+            'heading': str(section.get('heading') or '').strip()[:160],
+            'paragraphs': [
+                str(paragraph).strip()
+                for paragraph in section.get('paragraphs', [])
+                if str(paragraph).strip()
+            ][:5],
+            'bullets': [
+                str(bullet).strip()
+                for bullet in section.get('bullets', [])
+                if str(bullet).strip()
+            ][:8],
+            'code_examples': [
+                {
+                    'language': str(code.get('language') or 'text').strip()[:40],
+                    'code': str(code.get('code') or '').strip()[:4000],
+                }
+                for code in section.get('code_examples', [])
+                if isinstance(code, dict) and str(code.get('code') or '').strip()
+            ][:2],
+        })
+    return [section for section in normalized if section['heading'] and (section['paragraphs'] or section['bullets'] or section['code_examples'])]
+
+def validate_generated_blog_payload(payload):
+    if not isinstance(payload, dict):
+        raise ValueError('AI response was not a JSON object')
+
+    required_fields = ['title', 'description', 'keywords', 'intro', 'sections', 'conclusion']
+    missing = [field for field in required_fields if field not in payload]
+    if missing:
+        raise ValueError(f'AI response missing required fields: {", ".join(missing)}')
+
+    title = str(payload.get('title') or '').strip()
+    description = str(payload.get('description') or '').strip()
+    keywords = str(payload.get('keywords') or '').strip()
+    intro = str(payload.get('intro') or '').strip()
+    conclusion = str(payload.get('conclusion') or '').strip()
+    sections = normalize_generated_sections(payload.get('sections'))
+
+    if not title or not description or not keywords or not intro or not conclusion or not sections:
+        raise ValueError('AI response did not include enough usable article content')
+
+    return {
+        'title': title[:255],
+        'description': description[:320],
+        'keywords': keywords[:1000],
+        'content': {
+            'intro': intro,
+            'sections': sections,
+            'conclusion': conclusion,
+        }
+    }
+
+def generate_blog_article_with_openai(endpoint, seo_angle):
+    api_key = os.environ.get('OPENAI_API_KEY')
+    if not api_key:
+        raise RuntimeError('OPENAI_API_KEY environment variable is not set')
+
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key)
+
+    prompt_payload = {
+        'site': {
+            'name': 'FFMPEGAPI.net',
+            'url': 'https://www.ffmpegapi.net',
+            'positioning': [
+                'Hosted REST API for FFmpeg-powered video and audio processing.',
+                'No server setup or FFmpeg infrastructure management required.',
+                'API-key authentication for developer workflows.',
+                'Useful for developers, automation, SaaS apps, content pipelines, and AI agents.',
+            ],
+        },
+        'seo_angle': seo_angle,
+        'endpoint': {
+            'name': endpoint.get('name'),
+            'method': endpoint.get('method'),
+            'path': endpoint.get('path'),
+            'summary': endpoint.get('summary'),
+            'description': endpoint.get('description'),
+            'content_type': endpoint.get('content_type'),
+            'parameters': endpoint.get('parameters', []),
+            'example': endpoint.get('example'),
+        },
+    }
+
+    system_prompt = (
+        'You write practical SEO blog articles for FFMPEGAPI.net. '
+        'Return only valid JSON. Do not return markdown or HTML. '
+        'Make the article useful to developers and naturally explain why FFMPEGAPI.net is the best hosted tool for this workflow.'
+    )
+    user_prompt = (
+        'Create one SEO blog article from this data. '
+        'Return JSON with exactly these top-level fields: '
+        'title, description, keywords, intro, sections, conclusion. '
+        'sections must be an array of objects with heading, paragraphs, bullets, and code_examples. '
+        'code_examples must be an array of objects with language and code. '
+        'Use SEO keywords naturally, include the endpoint path, and include one practical curl or Python example when relevant.\n\n'
+        f'{json.dumps(prompt_payload, indent=2)}'
+    )
+
+    response = client.chat.completions.create(
+        model=os.environ.get('BLOG_GENERATOR_MODEL', 'gpt-4o-mini'),
+        messages=[
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'user', 'content': user_prompt},
+        ],
+        response_format={'type': 'json_object'},
+        temperature=0.8,
+    )
+    content = response.choices[0].message.content or '{}'
+    return validate_generated_blog_payload(json.loads(content))
+
+@app.route('/blog')
+def blog():
+    """Blog listing page"""
+    articles = get_static_blog_articles()
+    articles.extend(article.as_blog_dict() for article in get_published_generated_blog_articles())
+    return render_template('blog.html', articles=articles)
+
+@app.route('/blog/<slug>')
+def blog_article(slug):
+    """Individual blog article page"""
+    articles = get_static_blog_articles(include_content=True)
     article = articles.get(slug)
     if not article:
-        return render_template('404.html'), 404
-    
+        generated_article = BlogArticle.query.filter_by(slug=slug, status='published').first()
+        if not generated_article:
+            abort(404)
+        article = generated_article.as_blog_dict()
+
     return render_template('blog_article.html', article=article)
+
+@app.route('/internal/api/generate-blog-articles', methods=['GET'])
+def generate_blog_articles_endpoint():
+    """Generate SEO blog articles for cron-triggered internal use."""
+    configured_secret = os.environ.get('BLOG_GENERATOR_SECRET')
+    provided_secret = request.args.get('token') or request.headers.get('X-Internal-Token')
+
+    if not configured_secret:
+        return jsonify({
+            'success': False,
+            'error': 'BLOG_GENERATOR_SECRET environment variable is not set.'
+        }), 500
+    if not provided_secret or not secrets.compare_digest(provided_secret, configured_secret):
+        return jsonify({
+            'success': False,
+            'error': 'Unauthorized.'
+        }), 401
+
+    raw_limit = request.args.get('limit', '1')
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        return jsonify({
+            'success': False,
+            'error': 'limit must be an integer between 1 and 10.'
+        }), 400
+    limit = max(1, min(limit, 10))
+
+    created = []
+    failures = []
+    for index in range(limit):
+        endpoint = endpoint_for_blog_generation()
+        seo_angle = random.choice(BLOG_SEO_ANGLES)
+        try:
+            generated = generate_blog_article_with_openai(endpoint, seo_angle)
+            slug = unique_blog_slug(generated['title'])
+
+            article = BlogArticle(
+                slug=slug,
+                title=generated['title'],
+                description=generated['description'],
+                keywords=generated['keywords'],
+                author='FFMPEG API Team',
+                image='',
+                source_endpoint_name=endpoint.get('name'),
+                source_endpoint_path=endpoint.get('path'),
+                seo_angle=seo_angle,
+                status='published',
+            )
+            article.set_content(generated['content'])
+            db.session.add(article)
+            db.session.commit()
+
+            created.append({
+                'id': article.id,
+                'slug': article.slug,
+                'url': url_for('blog_article', slug=article.slug, _external=True),
+                'title': article.title,
+                'source_endpoint_name': article.source_endpoint_name,
+                'source_endpoint_path': article.source_endpoint_path,
+                'seo_angle': article.seo_angle,
+            })
+        except Exception as e:
+            db.session.rollback()
+            logging.error(f'Blog article generation failed for item {index + 1}: {str(e)}', exc_info=True)
+            failures.append({
+                'index': index + 1,
+                'source_endpoint_name': endpoint.get('name'),
+                'source_endpoint_path': endpoint.get('path'),
+                'seo_angle': seo_angle,
+                'error': str(e),
+            })
+
+    return jsonify({
+        'success': len(failures) == 0,
+        'requested': limit,
+        'created_count': len(created),
+        'failure_count': len(failures),
+        'created': created,
+        'failures': failures,
+    }), 200 if created or not failures else 500
 
 @app.route('/sitemap.xml')
 def sitemap():
@@ -3677,6 +3910,16 @@ def sitemap():
     
     for page in static_pages:
         pages.append(page)
+
+    try:
+        for article in get_published_generated_blog_articles():
+            pages.append({
+                'loc': url_for('blog_article', slug=article.slug, _external=True),
+                'priority': '0.8',
+                'changefreq': 'monthly',
+            })
+    except Exception as e:
+        logging.warning(f"Could not load generated blog articles for sitemap: {str(e)}")
     
     # Build XML
     sitemap_xml = ['<?xml version="1.0" encoding="UTF-8"?>']
@@ -3713,6 +3956,7 @@ def robots():
         'Disallow: /dashboard',
         'Disallow: /admin',
         'Disallow: /profile',
+        'Disallow: /internal/',
         'Disallow: /api/',
         'Disallow: /download/',
         'Disallow: /storage/',

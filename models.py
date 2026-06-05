@@ -255,6 +255,54 @@ class SiteSettings(db.Model):
     def __repr__(self):
         return f'<SiteSettings {self.site_name}>'
 
+class BlogArticle(db.Model):
+    __tablename__ = 'blog_articles'
+
+    id = db.Column(db.Integer, primary_key=True)
+    slug = db.Column(db.String(255), unique=True, nullable=False, index=True)
+    title = db.Column(db.String(255), nullable=False)
+    description = db.Column(db.Text, nullable=False)
+    keywords = db.Column(db.Text, nullable=False)
+    author = db.Column(db.String(100), nullable=False, default='FFMPEG API Team')
+    image = db.Column(db.String(500), nullable=False, default='')
+    content_json = db.Column(db.Text, nullable=False)
+    source_endpoint_name = db.Column(db.String(120), nullable=True, index=True)
+    source_endpoint_path = db.Column(db.String(255), nullable=True, index=True)
+    seo_angle = db.Column(db.String(255), nullable=True)
+    status = db.Column(db.String(30), nullable=False, default='published', index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def set_content(self, content):
+        self.content_json = json.dumps(content, default=str)
+
+    def get_content(self):
+        if not self.content_json:
+            return {}
+        try:
+            return json.loads(self.content_json)
+        except Exception:
+            return {}
+
+    def as_blog_dict(self):
+        return {
+            'slug': self.slug,
+            'title': self.title,
+            'description': self.description,
+            'date': self.created_at.strftime('%B %Y') if self.created_at else '',
+            'date_iso': self.created_at.strftime('%Y-%m-%d') if self.created_at else '',
+            'author': self.author,
+            'image': self.image,
+            'keywords': self.keywords,
+            'generated_content': self.get_content(),
+            'source_endpoint_name': self.source_endpoint_name,
+            'source_endpoint_path': self.source_endpoint_path,
+            'seo_angle': self.seo_angle,
+        }
+
+    def __repr__(self):
+        return f'<BlogArticle {self.slug}>'
+
 class Job(db.Model):
     __tablename__ = 'jobs'
     

@@ -83,7 +83,43 @@
 
                 <!-- Article Content -->
                 <div class="article-content">
+                    {% if article.content_file %}
                     {% include article.content_file %}
+                    {% else %}
+                        {% set content = article.generated_content or {} %}
+                        {% if content.intro %}
+                        <p class="lead">{{ content.intro }}</p>
+                        {% endif %}
+
+                        {% for section in content.sections or [] %}
+                        <section>
+                            <h2>{{ section.heading }}</h2>
+                            {% for paragraph in section.paragraphs or [] %}
+                            <p>{{ paragraph }}</p>
+                            {% endfor %}
+
+                            {% if section.bullets %}
+                            <div class="feature-box">
+                                <ul class="mb-0">
+                                    {% for bullet in section.bullets %}
+                                    <li>{{ bullet }}</li>
+                                    {% endfor %}
+                                </ul>
+                            </div>
+                            {% endif %}
+
+                            {% for code_example in section.code_examples or [] %}
+                            <pre><code class="language-{{ code_example.language }}">{{ code_example.code }}</code></pre>
+                            {% endfor %}
+                        </section>
+                        {% endfor %}
+
+                        {% if content.conclusion %}
+                        <div class="feature-box">
+                            <p class="mb-0">{{ content.conclusion }}</p>
+                        </div>
+                        {% endif %}
+                    {% endif %}
                 </div>
             </article>
 
@@ -106,12 +142,12 @@
 {
   "@context": "https://schema.org",
   "@type": "BlogPosting",
-  "headline": "{{ article.title }}",
-  "description": "{{ article.description }}",
-  "image": "{{ article.image }}",
+  "headline": {{ article.title|tojson }},
+  "description": {{ article.description|tojson }},
+  "image": {{ article.image|tojson }},
   "author": {
     "@type": "Organization",
-    "name": "{{ article.author }}",
+    "name": {{ article.author|tojson }},
     "url": "https://www.ffmpegapi.net"
   },
   "publisher": {
@@ -123,13 +159,13 @@
       "url": "https://www.ffmpegapi.net/static/logo.png"
     }
   },
-  "datePublished": "2025-11-01",
-  "dateModified": "2025-11-01",
+  "datePublished": {{ (article.date_iso or "2025-11-01")|tojson }},
+  "dateModified": {{ (article.date_iso or "2025-11-01")|tojson }},
   "mainEntityOfPage": {
     "@type": "WebPage",
     "@id": "https://www.ffmpegapi.net/blog/{{ article.get('slug', '') }}"
   },
-  "keywords": "{{ article.keywords }}"
+  "keywords": {{ article.keywords|tojson }}
 }
 </script>
 {% endblock %}
