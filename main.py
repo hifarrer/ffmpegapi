@@ -3659,6 +3659,8 @@ BLOG_SEO_ANGLES = [
     'fast media processing API for content pipelines',
 ]
 
+BLOG_ARTICLES_PER_PAGE = 9
+
 def endpoint_for_blog_generation():
     eligible = [endpoint for endpoint in ENDPOINTS if endpoint.get('operation_id') != 'getJobStatus']
     return random.choice(eligible or ENDPOINTS)
@@ -3787,7 +3789,33 @@ def blog():
     """Blog listing page"""
     articles = get_static_blog_articles()
     articles.extend(article.as_blog_dict() for article in get_published_generated_blog_articles())
-    return render_template('blog.html', articles=articles)
+
+    try:
+        page = int(request.args.get('page', '1'))
+    except (TypeError, ValueError):
+        page = 1
+    page = max(page, 1)
+
+    total_articles = len(articles)
+    total_pages = max(1, (total_articles + BLOG_ARTICLES_PER_PAGE - 1) // BLOG_ARTICLES_PER_PAGE)
+    page = min(page, total_pages)
+    start = (page - 1) * BLOG_ARTICLES_PER_PAGE
+    end = start + BLOG_ARTICLES_PER_PAGE
+    paginated_articles = articles[start:end]
+
+    pagination = {
+        'page': page,
+        'per_page': BLOG_ARTICLES_PER_PAGE,
+        'total_articles': total_articles,
+        'total_pages': total_pages,
+        'has_prev': page > 1,
+        'has_next': page < total_pages,
+        'prev_page': page - 1 if page > 1 else None,
+        'next_page': page + 1 if page < total_pages else None,
+        'pages': list(range(1, total_pages + 1)),
+    }
+
+    return render_template('blog.html', articles=paginated_articles, pagination=pagination)
 
 @app.route('/blog/<slug>')
 def blog_article(slug):

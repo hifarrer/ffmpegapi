@@ -19,15 +19,22 @@
 {% endblock %}
 
 {% block content %}
+{% set canonical_url = "https://www.ffmpegapi.net/blog" if pagination.page == 1 else "https://www.ffmpegapi.net/blog?page=" ~ pagination.page %}
 <!-- SEO Meta Tags -->
 <meta name="description" content="Explore FFMPEG API blog for video processing guides, tutorials, and best practices. Learn about video merging, audio processing, and API integration.">
 <meta name="keywords" content="ffmpeg api blog, video processing guides, video merger tutorials, ffmpeg rest api, video api documentation">
-<link rel="canonical" href="https://www.ffmpegapi.net/blog">
+<link rel="canonical" href="{{ canonical_url }}">
+{% if pagination.has_prev %}
+<link rel="prev" href="{{ url_for('blog', page=pagination.prev_page, _external=True) }}">
+{% endif %}
+{% if pagination.has_next %}
+<link rel="next" href="{{ url_for('blog', page=pagination.next_page, _external=True) }}">
+{% endif %}
 
 <!-- Open Graph Tags -->
 <meta property="og:title" content="Blog - FFMPEG API | Video Processing Insights & Guides">
 <meta property="og:description" content="Explore FFMPEG API blog for video processing guides, tutorials, and best practices.">
-<meta property="og:url" content="https://www.ffmpegapi.net/blog">
+<meta property="og:url" content="{{ canonical_url }}">
 <meta property="og:type" content="website">
 <meta property="og:image" content="https://images.unsplash.com/photo-1536240478700-b869070f9279?w=1200">
 
@@ -71,6 +78,28 @@
         {% endfor %}
     </div>
 
+    {% if pagination.total_pages > 1 %}
+    <nav class="mt-5" aria-label="Blog pagination">
+        <ul class="pagination justify-content-center flex-wrap gap-1">
+            <li class="page-item {% if not pagination.has_prev %}disabled{% endif %}">
+                <a class="page-link" href="{{ url_for('blog', page=pagination.prev_page or 1) }}" aria-label="Previous page">
+                    <i class="fas fa-chevron-left"></i>
+                </a>
+            </li>
+            {% for page_num in pagination.pages %}
+            <li class="page-item {% if page_num == pagination.page %}active{% endif %}">
+                <a class="page-link" href="{{ url_for('blog', page=page_num) }}">{{ page_num }}</a>
+            </li>
+            {% endfor %}
+            <li class="page-item {% if not pagination.has_next %}disabled{% endif %}">
+                <a class="page-link" href="{{ url_for('blog', page=pagination.next_page or pagination.total_pages) }}" aria-label="Next page">
+                    <i class="fas fa-chevron-right"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    {% endif %}
+
     <!-- SEO Content Section -->
     <div class="row mt-5">
         <div class="col-lg-10 mx-auto">
@@ -103,7 +132,7 @@
   "@type": "Blog",
   "name": "FFMPEG API Blog",
   "description": "Video processing guides, tutorials and best practices using FFMPEG API",
-  "url": "https://www.ffmpegapi.net/blog",
+  "url": "{{ canonical_url }}",
   "publisher": {
   "@type": "Organization",
   "name": "FFMPEG API",
