@@ -1,0 +1,211 @@
+{% extends "base.html" %}
+
+{% block title %}MCP Server - FFMPEG API{% endblock %}
+
+{% block extra_css %}
+<style>
+    .mcp-hero {
+        background: linear-gradient(135deg, rgba(13, 110, 253, 0.16), rgba(32, 201, 151, 0.08));
+        border-bottom: 1px solid var(--bs-border-color);
+    }
+
+    .code-block {
+        background: #111827;
+        border: 1px solid var(--bs-border-color);
+        border-radius: 0.5rem;
+        overflow-x: auto;
+    }
+
+    .code-block pre {
+        color: #e5e7eb;
+        margin: 0;
+        padding: 1rem;
+        white-space: pre;
+    }
+
+    .step-number {
+        width: 2rem;
+        height: 2rem;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 999px;
+        background: var(--bs-primary);
+        color: white;
+        font-weight: 700;
+        margin-right: 0.75rem;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<section class="mcp-hero py-5">
+    <div class="container">
+        <div class="row align-items-center g-4">
+            <div class="col-lg-8">
+                <p class="text-primary fw-semibold mb-2">Model Context Protocol</p>
+                <h1 class="display-5 fw-bold mb-3">Use FFMPEG API Directly From MCP Clients</h1>
+                <p class="lead mb-0">
+                    Connect tools like Cursor, Claude Desktop, and MCP Inspector to the FFMPEG API media endpoints through the hosted MCP server.
+                </p>
+            </div>
+            <div class="col-lg-4">
+                <div class="card">
+                    <div class="card-body">
+                        <div class="small text-muted mb-2">MCP endpoint</div>
+                        <code class="d-block mb-3">https://mcp.ffmpegapi.net/mcp</code>
+                        <div class="small text-muted mb-2">Required header</div>
+                        <code class="d-block">X-API-Key: your_api_key_here</code>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<main class="container py-5">
+    <div class="row g-4">
+        <div class="col-lg-8">
+            <section class="mb-5">
+                <h2 class="h3 mb-3"><span class="step-number">1</span>Get an API key</h2>
+                <p>
+                    MCP requests use the same API keys, usage limits, and billing rules as the REST API.
+                    {% if current_user.is_authenticated %}
+                        Get or manage your key in your <a href="{{ url_for('dashboard') }}">dashboard</a>.
+                    {% else %}
+                        <a href="{{ url_for('auth.register') }}">Create an account</a> or <a href="{{ url_for('auth.login') }}">log in</a> to get your key.
+                    {% endif %}
+                </p>
+            </section>
+
+            <section class="mb-5">
+                <h2 class="h3 mb-3"><span class="step-number">2</span>Connect your MCP client</h2>
+                <p>Use Streamable HTTP transport with this URL:</p>
+                <div class="code-block mb-3">
+                    <pre><code>https://mcp.ffmpegapi.net/mcp</code></pre>
+                </div>
+                <p>Send your API key as a request header. Do not put the key in tool arguments.</p>
+                <div class="code-block">
+                    <pre><code>X-API-Key: your_api_key_here</code></pre>
+                </div>
+            </section>
+
+            <section class="mb-5">
+                <h2 class="h3 mb-3"><span class="step-number">3</span>Test with MCP Inspector</h2>
+                <div class="code-block mb-3">
+                    <pre><code>npx -y @modelcontextprotocol/inspector</code></pre>
+                </div>
+                <p>In the Inspector UI, connect to:</p>
+                <div class="code-block mb-3">
+                    <pre><code>https://mcp.ffmpegapi.net/mcp</code></pre>
+                </div>
+                <p>Add this header:</p>
+                <div class="code-block">
+                    <pre><code>{
+  "X-API-Key": "your_api_key_here"
+}</code></pre>
+                </div>
+            </section>
+
+            <section class="mb-5">
+                <h2 class="h3 mb-3">Cursor Example</h2>
+                <p>Add the server to your Cursor MCP configuration with a Streamable HTTP endpoint and header authentication.</p>
+                <div class="code-block">
+                    <pre><code>{
+  "mcpServers": {
+    "ffmpegapi": {
+      "url": "https://mcp.ffmpegapi.net/mcp",
+      "headers": {
+        "X-API-Key": "your_api_key_here"
+      }
+    }
+  }
+}</code></pre>
+                </div>
+            </section>
+
+            <section class="mb-5">
+                <h2 class="h3 mb-3">Claude Desktop Example</h2>
+                <p>If your Claude Desktop version supports remote MCP servers, configure the hosted endpoint with the same header.</p>
+                <div class="code-block">
+                    <pre><code>{
+  "mcpServers": {
+    "ffmpegapi": {
+      "url": "https://mcp.ffmpegapi.net/mcp",
+      "headers": {
+        "X-API-Key": "your_api_key_here"
+      }
+    }
+  }
+}</code></pre>
+                </div>
+                <p class="small text-muted mt-3">
+                    If your client only supports local stdio MCP servers, use MCP Inspector or a local proxy that can connect to Streamable HTTP.
+                </p>
+            </section>
+
+            <section class="mb-5">
+                <h2 class="h3 mb-3">Available Tools</h2>
+                <p>The MCP server exposes the current public media-processing API endpoints as tools.</p>
+                <div class="row">
+                    {% for tool in tools %}
+                    <div class="col-md-6 mb-2">
+                        <div class="card h-100">
+                            <div class="card-body py-3">
+                                <code>{{ tool }}</code>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </section>
+
+            <section class="mb-5">
+                <h2 class="h3 mb-3">Resources</h2>
+                <p>The server also exposes read-only API reference resources for agents.</p>
+                <div class="code-block">
+                    <pre><code>ffmpegapi://openapi.json
+ffmpegapi://docs.md
+ffmpegapi://examples.md
+ffmpegapi://llms-full.txt</code></pre>
+                </div>
+            </section>
+        </div>
+
+        <aside class="col-lg-4">
+            <div class="sticky-top" style="top: 1rem;">
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h2 class="h6 mb-0"><i class="fas fa-circle-check me-2"></i>Quick Check</h2>
+                    </div>
+                    <div class="card-body">
+                        <ul class="list-unstyled mb-0">
+                            <li class="mb-2">Endpoint: <code>https://mcp.ffmpegapi.net/mcp</code></li>
+                            <li class="mb-2">Transport: Streamable HTTP</li>
+                            <li class="mb-2">Authentication: <code>X-API-Key</code> header</li>
+                            <li class="mb-0">Tools: {{ tools|length }}</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h2 class="h6 mb-0"><i class="fas fa-link me-2"></i>Related Links</h2>
+                    </div>
+                    <div class="card-body">
+                        <a class="btn btn-outline-light w-100 mb-2" href="{{ url_for('api_docs') }}">
+                            <i class="fas fa-book me-2"></i>REST API Docs
+                        </a>
+                        <a class="btn btn-outline-light w-100 mb-2" href="{{ url_for('openapi_json') }}">
+                            <i class="fas fa-code me-2"></i>OpenAPI JSON
+                        </a>
+                        <a class="btn btn-outline-light w-100" href="{{ url_for('docs_markdown') }}">
+                            <i class="fas fa-file-lines me-2"></i>Markdown Docs
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </aside>
+    </div>
+</main>
+{% endblock %}

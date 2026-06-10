@@ -2210,6 +2210,16 @@ def api_docs():
     """API documentation page - no login required"""
     return render_template('api_docs.html', docs_json_ld=docs_json_ld())
 
+@app.route('/mcp')
+def mcp_docs():
+    """MCP documentation page - no login required"""
+    def operation_id_to_tool_name(operation_id):
+        name = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", operation_id)
+        return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name).lower()
+
+    tools = [operation_id_to_tool_name(endpoint["operation_id"]) for endpoint in ENDPOINTS]
+    return render_template('mcp.html', tools=tools)
+
 @app.route('/llms.txt')
 def llms_txt():
     """Concise LLM discovery file."""
@@ -3943,6 +3953,7 @@ def sitemap():
     static_pages = [
         {'loc': url_for('index', _external=True), 'priority': '1.0', 'changefreq': 'daily'},
         {'loc': url_for('api_docs', _external=True), 'priority': '0.9', 'changefreq': 'weekly'},
+        {'loc': url_for('mcp_docs', _external=True), 'priority': '0.9', 'changefreq': 'weekly'},
         {'loc': url_for('docs_markdown', _external=True), 'priority': '0.9', 'changefreq': 'weekly'},
         {'loc': url_for('examples_markdown', _external=True), 'priority': '0.8', 'changefreq': 'weekly'},
         {'loc': url_for('pricing_markdown', _external=True), 'priority': '0.8', 'changefreq': 'weekly'},
@@ -3995,6 +4006,7 @@ def robots():
         'User-agent: *',
         'Allow: /',
         'Allow: /docs',
+        'Allow: /mcp',
         'Allow: /docs.md',
         'Allow: /examples.md',
         'Allow: /pricing.md',
