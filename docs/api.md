@@ -23,7 +23,7 @@ Many long-running endpoints accept `async: true`. The response includes `job_id`
 
 `POST /api/merge_image_audio`
 
-Combines one or more image/audio pairs. Each image is shown for the duration of its matching audio file, then the next image is displayed when the next audio begins. JSON requests should use image_urls and audio_urls arrays for multi-pair videos, or legacy image and audio strings for a single pair. Optional image transitions are supported.
+Combines one or more image/audio pairs. Each image is shown for the duration of its matching audio file, then the next image is displayed when the next audio begins. JSON requests should use image_urls and audio_urls arrays for multi-pair videos, or legacy image and audio strings for a single pair. Optional image transitions and a default slow zoom effect are supported.
 
 Content type: `application/json or multipart/form-data`
 
@@ -36,6 +36,7 @@ Parameters:
 - `transition_effect` (string, optional): Optional image transition. Values include none, fade, wipeleft, wiperight, wipeup, wipedown, slideleft, slideright, slideup, slidedown, circlecrop, rectcrop, distance, fadeblack, fadewhite, radial, smoothleft, smoothright, smoothup, smoothdown.
 - `transition_duration` (number, optional): Transition duration in seconds. Defaults to 0.5 when transition_effect is set. Maximum 5.
 - `dimensions` (string, optional): Optional output dimensions such as 1280x720 or 1080x1920.
+- `zoom_effect` (boolean, optional): Slowly zoom each image while its paired audio plays. Defaults to true.
 - `async` (boolean, optional): Return a job_id immediately and process in the background.
 
 Example:
@@ -56,6 +57,7 @@ curl -X POST "https://ffmpegapi.net/api/merge_image_audio" \
   "transition_effect": "fade",
   "transition_duration": 0.75,
   "dimensions": "1280x720",
+  "zoom_effect": true,
   "async": false
 }'
 ```
@@ -90,6 +92,42 @@ curl -X POST "https://ffmpegapi.net/api/merge_videos" \
     "https://example.com/intro.mp4",
     "https://example.com/main.mp4"
   ],
+  "dimensions": "1920x1080"
+}'
+```
+
+Typical successful response fields include `success`, `message`, `download_url`, and `filename` for file-producing endpoints. Split endpoints may return arrays of part or segment URLs. Caption endpoints may return caption artifact URLs.
+
+### Neonvideo Merge Videos
+
+`POST /api/neonvideo_merge_videos`
+
+Downloads one or more videos, normalizes and concatenates them, and can append an outro video that keeps its own audio. Optional audio replacement, output dimensions, subtitle burn-in, and watermark overlay are supported.
+
+Content type: `application/json`
+
+Parameters:
+
+- `video_urls` (array[string], required): Video URLs to merge. Use at least one URL.
+- `audio_url` (string, optional): Optional replacement audio URL for the main merged video. Not used during outro playback.
+- `outro_url` (string, optional): Optional outro video URL to append. The outro keeps its own audio.
+- `dimensions` (string, optional): Optional output dimensions such as 1920x1080.
+- `subtitle_url` (string, optional): Optional ASS/SSA subtitle URL to burn into the merged video.
+- `watermark_url` (string, optional): Optional watermark image URL.
+- `async` (boolean, optional): Return a job_id immediately and process in the background.
+
+Example:
+
+```bash
+curl -X POST "https://ffmpegapi.net/api/neonvideo_merge_videos" \
+  -H "X-API-Key: your_api_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+  "video_urls": [
+    "https://example.com/intro.mp4",
+    "https://example.com/main.mp4"
+  ],
+  "outro_url": "https://example.com/outro.mp4",
   "dimensions": "1920x1080"
 }'
 ```
