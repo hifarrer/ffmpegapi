@@ -81,7 +81,7 @@
     {% if pagination.total_pages > 1 %}
     <nav class="mt-5" aria-label="Blog pagination">
         <ul class="pagination justify-content-center flex-wrap gap-1">
-            {% for item in pagination.items %}
+            {% for item in pagination.page_items %}
                 {% if item.type == 'ellipsis' %}
                 <li class="page-item disabled" aria-hidden="true">
                     <span class="page-link">...</span>

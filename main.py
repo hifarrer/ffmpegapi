@@ -3835,7 +3835,7 @@ def blog():
         'has_next': page < total_pages,
         'prev_page': page - 1 if page > 1 else None,
         'next_page': page + 1 if page < total_pages else None,
-        'items': get_blog_pagination_items(total_pages),
+        'page_items': get_blog_pagination_items(total_pages),
     }
 
     return render_template('blog.html', articles=paginated_articles, pagination=pagination)
