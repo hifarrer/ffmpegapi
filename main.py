@@ -3629,6 +3629,28 @@ def get_static_blog_articles(include_content=False):
 def get_published_generated_blog_articles():
     return BlogArticle.query.filter_by(status='published').order_by(BlogArticle.created_at.desc()).all()
 
+def get_blog_pagination_items(total_pages, edge_pages=5):
+    """Return compact pagination items with first/last links and ellipsis gaps."""
+    if total_pages <= 1:
+        return []
+
+    page_numbers = set(range(2, min(edge_pages, total_pages - 1) + 1))
+    page_numbers.update(range(max(total_pages - edge_pages + 1, 2), total_pages))
+    page_numbers = sorted(page_numbers)
+
+    items = [{'type': 'page', 'page': 1, 'label': 'First'}]
+    previous_page = 1
+    for page_number in page_numbers:
+        if page_number - previous_page > 1:
+            items.append({'type': 'ellipsis'})
+        items.append({'type': 'page', 'page': page_number, 'label': str(page_number)})
+        previous_page = page_number
+
+    if total_pages - previous_page > 1:
+        items.append({'type': 'ellipsis'})
+    items.append({'type': 'page', 'page': total_pages, 'label': 'Last'})
+    return items
+
 def slugify_blog_title(title):
     slug = re.sub(r'[^a-z0-9]+', '-', (title or '').lower()).strip('-')
     return slug[:180].strip('-') or f'ffmpeg-api-guide-{uuid.uuid4().hex[:8]}'
@@ -3789,6 +3811,7 @@ def blog():
     """Blog listing page"""
     articles = get_static_blog_articles()
     articles.extend(article.as_blog_dict() for article in get_published_generated_blog_articles())
+    articles.sort(key=lambda article: article.get('date_iso') or '', reverse=True)
 
     try:
         page = int(request.args.get('page', '1'))
@@ -3812,7 +3835,7 @@ def blog():
         'has_next': page < total_pages,
         'prev_page': page - 1 if page > 1 else None,
         'next_page': page + 1 if page < total_pages else None,
-        'pages': list(range(1, total_pages + 1)),
+        'items': get_blog_pagination_items(total_pages),
     }
 
     return render_template('blog.html', articles=paginated_articles, pagination=pagination)

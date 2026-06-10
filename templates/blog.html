@@ -81,21 +81,17 @@
     {% if pagination.total_pages > 1 %}
     <nav class="mt-5" aria-label="Blog pagination">
         <ul class="pagination justify-content-center flex-wrap gap-1">
-            <li class="page-item {% if not pagination.has_prev %}disabled{% endif %}">
-                <a class="page-link" href="{{ url_for('blog', page=pagination.prev_page or 1) }}" aria-label="Previous page">
-                    <i class="fas fa-chevron-left"></i>
-                </a>
-            </li>
-            {% for page_num in pagination.pages %}
-            <li class="page-item {% if page_num == pagination.page %}active{% endif %}">
-                <a class="page-link" href="{{ url_for('blog', page=page_num) }}">{{ page_num }}</a>
-            </li>
+            {% for item in pagination.items %}
+                {% if item.type == 'ellipsis' %}
+                <li class="page-item disabled" aria-hidden="true">
+                    <span class="page-link">...</span>
+                </li>
+                {% else %}
+                <li class="page-item {% if item.page == pagination.page %}active{% endif %}">
+                    <a class="page-link" href="{{ url_for('blog', page=item.page) }}">{{ item.label }}</a>
+                </li>
+                {% endif %}
             {% endfor %}
-            <li class="page-item {% if not pagination.has_next %}disabled{% endif %}">
-                <a class="page-link" href="{{ url_for('blog', page=pagination.next_page or pagination.total_pages) }}" aria-label="Next page">
-                    <i class="fas fa-chevron-right"></i>
-                </a>
-            </li>
         </ul>
     </nav>
     {% endif %}
