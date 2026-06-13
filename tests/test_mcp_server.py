@@ -25,6 +25,14 @@ class McpCatalogTests(unittest.TestCase):
             self.assertNotIn("api_key", schema_json)
             self.assertNotIn("x-api-key", schema_json)
 
+    def test_tool_output_schemas_are_endpoint_specific(self):
+        output_schemas = {tool.name: tool.outputSchema for tool in mcp_tool_definitions()}
+
+        self.assertIn("audio_parts", json.dumps(output_schemas["split_audio"]))
+        self.assertIn("image_url", json.dumps(output_schemas["get_first_frame_image"]))
+        self.assertIn("captions_json_url", json.dumps(output_schemas["add_tiktok_captions"]))
+        self.assertNotEqual(output_schemas["merge_videos"]["properties"]["response"], {"type": "object"})
+
     def test_neonvideo_schema_matches_endpoint_metadata(self):
         endpoint = tool_catalog()["neonvideo_merge_videos"]
         schema = input_schema_for_endpoint(endpoint)
@@ -116,4 +124,3 @@ class McpSecurityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

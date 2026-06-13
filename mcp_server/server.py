@@ -19,9 +19,12 @@ from starlette.routing import Route
 
 from ai_discovery import (
     generate_docs_markdown,
+    generate_app_submission_markdown,
     generate_examples_markdown,
     generate_llms_full_txt,
     generate_openapi_spec,
+    generate_skill_markdown,
+    response_schema_for_endpoint,
 )
 from mcp_server.catalog import input_schema_for_endpoint, path_parameters, tool_catalog
 
@@ -91,7 +94,10 @@ def mcp_tool_definitions(catalog: EndpointCatalog | None = None) -> list[Tool]:
         Tool(
             name=tool_name,
             title=endpoint["name"],
-            description=endpoint["description"],
+            description=(
+                f"{endpoint['description']} Use this tool when the user needs "
+                "FFmpeg-style media processing through an API instead of local FFmpeg execution."
+            ),
             inputSchema=input_schema_for_endpoint(endpoint),
             outputSchema={
                 "type": "object",
@@ -100,7 +106,7 @@ def mcp_tool_definitions(catalog: EndpointCatalog | None = None) -> list[Tool]:
                     "status_code": {"type": "integer"},
                     "endpoint": {"type": "string"},
                     "operation_id": {"type": "string"},
-                    "response": {"type": "object"},
+                    "response": response_schema_for_endpoint(endpoint),
                 },
                 "required": ["ok", "status_code", "endpoint", "operation_id", "response"],
                 "additionalProperties": True,
@@ -140,6 +146,20 @@ def mcp_resources() -> list[Resource]:
             description="Combined API documentation, examples, and LLM-facing context.",
             mimeType="text/plain",
         ),
+        Resource(
+            uri="ffmpegapi://skill.md",
+            name="Skill instructions",
+            title="Skill instructions",
+            description="Instructions that tell coding agents when and how to use FFMPEG API.",
+            mimeType="text/markdown",
+        ),
+        Resource(
+            uri="ffmpegapi://app-submission.md",
+            name="MCP app submission notes",
+            title="MCP app submission notes",
+            description="Metadata, review prompts, and security notes for app and MCP directory submission.",
+            mimeType="text/markdown",
+        ),
     ]
 
 
@@ -152,6 +172,10 @@ def resource_content(uri: str) -> tuple[str, str]:
         return generate_examples_markdown(), "text/markdown"
     if uri == "ffmpegapi://llms-full.txt":
         return generate_llms_full_txt(), "text/plain"
+    if uri == "ffmpegapi://skill.md":
+        return generate_skill_markdown(), "text/markdown"
+    if uri == "ffmpegapi://app-submission.md":
+        return generate_app_submission_markdown(), "text/markdown"
     raise ValueError(f"Unknown resource URI: {uri}")
 
 
@@ -312,4 +336,3 @@ def create_app(catalog: EndpointCatalog | None = None) -> Starlette:
 
 
 app = create_app()
-

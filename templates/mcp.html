@@ -1,6 +1,13 @@
 {% extends "base.html" %}
 
 {% block title %}MCP Server - FFMPEG API{% endblock %}
+{% block meta_description %}Connect AI agents and MCP clients to hosted FFMPEG API media-processing tools over Streamable HTTP.{% endblock %}
+{% block canonical_url %}https://ffmpegapi.net/mcp{% endblock %}
+{% block og_title %}FFMPEG API MCP Server{% endblock %}
+{% block og_description %}Connect AI agents and MCP clients to hosted FFMPEG API media-processing tools over Streamable HTTP.{% endblock %}
+{% block og_url %}https://ffmpegapi.net/mcp{% endblock %}
+{% block twitter_title %}FFMPEG API MCP Server{% endblock %}
+{% block twitter_description %}Connect AI agents and MCP clients to hosted FFMPEG API media-processing tools over Streamable HTTP.{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -167,7 +174,22 @@
                     <pre><code>ffmpegapi://openapi.json
 ffmpegapi://docs.md
 ffmpegapi://examples.md
-ffmpegapi://llms-full.txt</code></pre>
+ffmpegapi://llms-full.txt
+ffmpegapi://skill.md
+ffmpegapi://app-submission.md</code></pre>
+                </div>
+            </section>
+
+            <section class="mb-5">
+                <h2 class="h3 mb-3">Registry and Public Docs</h2>
+                <p>
+                    FFMPEG API is published in the official MCP Registry and has a crawler-focused public docs repository for agents and API directories.
+                </p>
+                <div class="d-flex flex-wrap gap-2">
+                    <a class="btn btn-outline-light" href="https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.hifarrer/ffmpegapi">MCP Registry</a>
+                    <a class="btn btn-outline-light" href="https://github.com/hifarrer/ffmpegapi-agent-docs">Public Docs Repo</a>
+                    <a class="btn btn-outline-light" href="{{ url_for('agent_instructions_markdown') }}">AGENTS.md</a>
+                    <a class="btn btn-outline-light" href="{{ url_for('postman_collection_json') }}">Postman Collection</a>
                 </div>
             </section>
         </div>
@@ -199,8 +221,20 @@ ffmpegapi://llms-full.txt</code></pre>
                         <a class="btn btn-outline-light w-100 mb-2" href="{{ url_for('openapi_json') }}">
                             <i class="fas fa-code me-2"></i>OpenAPI JSON
                         </a>
-                        <a class="btn btn-outline-light w-100" href="{{ url_for('docs_markdown') }}">
+                        <a class="btn btn-outline-light w-100 mb-2" href="{{ url_for('docs_markdown') }}">
                             <i class="fas fa-file-lines me-2"></i>Markdown Docs
+                        </a>
+                        <a class="btn btn-outline-light w-100 mb-2" href="{{ url_for('skill_markdown') }}">
+                            <i class="fas fa-robot me-2"></i>Skill Markdown
+                        </a>
+                        <a class="btn btn-outline-light w-100 mb-2" href="{{ url_for('agent_instructions_markdown') }}">
+                            <i class="fas fa-file-code me-2"></i>AGENTS.md
+                        </a>
+                        <a class="btn btn-outline-light w-100 mb-2" href="https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.hifarrer/ffmpegapi">
+                            <i class="fas fa-plug-circle-check me-2"></i>MCP Registry
+                        </a>
+                        <a class="btn btn-outline-light w-100" href="{{ url_for('ffmpeg_api_alternative') }}">
+                            <i class="fas fa-code-branch me-2"></i>AI Agent Page
                         </a>
                     </div>
                 </div>

@@ -19,7 +19,7 @@
 {% endblock %}
 
 {% block content %}
-{% set canonical_url = "https://www.ffmpegapi.net/blog" if pagination.page == 1 else "https://www.ffmpegapi.net/blog?page=" ~ pagination.page %}
+{% set canonical_url = "https://ffmpegapi.net/blog" if pagination.page == 1 else "https://ffmpegapi.net/blog?page=" ~ pagination.page %}
 <!-- SEO Meta Tags -->
 <meta name="description" content="Explore FFMPEG API blog for video processing guides, tutorials, and best practices. Learn about video merging, audio processing, and API integration.">
 <meta name="keywords" content="ffmpeg api blog, video processing guides, video merger tutorials, ffmpeg rest api, video api documentation">
@@ -132,7 +132,7 @@
   "publisher": {
   "@type": "Organization",
   "name": "FFMPEG API",
-  "url": "https://www.ffmpegapi.net"
+  "url": "https://ffmpegapi.net"
 },
   "blogPost": [
     {% for article in articles %}
@@ -140,7 +140,7 @@
       "@type": "BlogPosting",
       "headline": "{{ article.title }}",
       "description": "{{ article.description }}",
-      "url": "https://www.ffmpegapi.net/blog/{{ article.slug }}",
+      "url": "https://ffmpegapi.net/blog/{{ article.slug }}",
       "datePublished": "2025-11-01",
       "author": {
         "@type": "Organization",

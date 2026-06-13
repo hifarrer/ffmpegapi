@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block title %}Terms of Service - FFMPEG API{% endblock %}
+
+{% block content %}
+<main class="container py-5">
+    <h1 class="display-6 fw-bold mb-4">Terms of Service</h1>
+    <p>
+        By using FFMPEG API, you agree to use the service lawfully and only with media and URLs that you have the right to process.
+    </p>
+    <h2 class="h4 mt-4">Acceptable Use</h2>
+    <ul>
+        <li>Do not submit illegal, infringing, abusive, or malicious content.</li>
+        <li>Do not attempt to bypass API limits, billing controls, security checks, or access restrictions.</li>
+        <li>Do not use the service to attack, overload, or probe third-party systems.</li>
+    </ul>
+    <h2 class="h4 mt-4">API Keys</h2>
+    <p>
+        You are responsible for keeping API keys secret. Send keys using the <code>X-API-Key</code> header and avoid placing keys in public code, prompts, or logs.
+    </p>
+    <h2 class="h4 mt-4">Service Availability</h2>
+    <p>
+        Media processing can fail because of invalid URLs, unsupported files, third-party download restrictions, timeouts, or infrastructure issues. The service is provided without a guarantee of uninterrupted availability.
+    </p>
+    <h2 class="h4 mt-4">Contact</h2>
+    <p>
+        For terms or account questions, use the <a href="{{ url_for('contact') }}">contact page</a>.
+    </p>
+</main>
+{% endblock %}

@@ -48,12 +48,12 @@
 <!-- SEO Meta Tags -->
 <meta name="description" content="{{ article.description }}">
 <meta name="keywords" content="{{ article.keywords }}">
-<link rel="canonical" href="https://www.ffmpegapi.net/blog/{{ article.get('slug', '') }}">
+<link rel="canonical" href="https://ffmpegapi.net/blog/{{ article.get('slug', '') }}">
 
 <!-- Open Graph Tags -->
 <meta property="og:title" content="{{ article.title }}">
 <meta property="og:description" content="{{ article.description }}">
-<meta property="og:url" content="https://www.ffmpegapi.net/blog/{{ article.get('slug', '') }}">
+<meta property="og:url" content="https://ffmpegapi.net/blog/{{ article.get('slug', '') }}">
 <meta property="og:type" content="article">
 <meta property="og:image" content="{{ article.image }}">
 
@@ -148,22 +148,22 @@
   "author": {
     "@type": "Organization",
     "name": {{ article.author|tojson }},
-    "url": "https://www.ffmpegapi.net"
+    "url": "https://ffmpegapi.net"
   },
   "publisher": {
     "@type": "Organization",
     "name": "FFMPEG API",
-    "url": "https://www.ffmpegapi.net",
+    "url": "https://ffmpegapi.net",
     "logo": {
       "@type": "ImageObject",
-      "url": "https://www.ffmpegapi.net/static/logo.png"
+      "url": "https://ffmpegapi.net/static/logo.png"
     }
   },
   "datePublished": {{ (article.date_iso or "2025-11-01")|tojson }},
   "dateModified": {{ (article.date_iso or "2025-11-01")|tojson }},
   "mainEntityOfPage": {
     "@type": "WebPage",
-    "@id": "https://www.ffmpegapi.net/blog/{{ article.get('slug', '') }}"
+    "@id": "https://ffmpegapi.net/blog/{{ article.get('slug', '') }}"
   },
   "keywords": {{ article.keywords|tojson }}
 }

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.hifarrer/ffmpegapi",
+  "title": "FFMPEG API",
+  "description": "Hosted MCP tools for FFmpeg-style video and audio processing through FFMPEG API.",
+  "version": "1.0.1",
+  "repository": {
+    "url": "https://github.com/hifarrer/ffmpegapi-agent-docs",
+    "source": "github"
+  },
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.ffmpegapi.net/mcp",
+      "headers": [
+        {
+          "name": "X-API-Key",
+          "description": "FFMPEG API key for authenticating MCP requests.",
+          "isRequired": true,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

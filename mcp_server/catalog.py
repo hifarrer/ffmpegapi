@@ -2,7 +2,7 @@ import re
 from copy import deepcopy
 from typing import Any
 
-from ai_discovery import ENDPOINTS
+from ai_discovery import ENDPOINTS, request_schema_for_endpoint
 
 
 PATH_PARAMETER_RE = re.compile(r"{([^}]+)}")
@@ -36,17 +36,7 @@ def schema_for_param(param: dict[str, Any]) -> dict[str, Any]:
 
 
 def input_schema_for_endpoint(endpoint: dict[str, Any]) -> dict[str, Any]:
-    if endpoint.get("request_schema") and endpoint["method"] != "GET":
-        return deepcopy(endpoint["request_schema"])
-
-    required = [p["name"] for p in endpoint["parameters"] if p.get("required")]
-    properties = {p["name"]: schema_for_param(p) for p in endpoint["parameters"]}
-    return {
-        "type": "object",
-        "required": required,
-        "properties": properties,
-        "additionalProperties": False,
-    }
+    return deepcopy(request_schema_for_endpoint(endpoint))
 
 
 def tool_catalog() -> dict[str, dict[str, Any]]:
@@ -59,4 +49,3 @@ def tool_catalog() -> dict[str, dict[str, Any]]:
 
 def path_parameters(path: str) -> list[str]:
     return PATH_PARAMETER_RE.findall(path)
-

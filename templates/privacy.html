@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block title %}Privacy Policy - FFMPEG API{% endblock %}
+
+{% block content %}
+<main class="container py-5">
+    <h1 class="display-6 fw-bold mb-4">Privacy Policy</h1>
+    <p>
+        FFMPEG API processes account, billing, API usage, and media-processing request data to provide the service.
+        API requests may include media URLs supplied by users or applications.
+    </p>
+    <h2 class="h4 mt-4">Data We Process</h2>
+    <ul>
+        <li>Account information such as email address and authentication records.</li>
+        <li>API keys, request metadata, endpoint usage, and processing logs.</li>
+        <li>Media URLs, temporary uploaded files, generated outputs, and job status records.</li>
+        <li>Billing and subscription data handled through payment providers.</li>
+    </ul>
+    <h2 class="h4 mt-4">How Data Is Used</h2>
+    <p>
+        Data is used to authenticate requests, process media jobs, prevent abuse, debug failures, measure usage, and provide billing and support.
+    </p>
+    <h2 class="h4 mt-4">Retention</h2>
+    <p>
+        Temporary media files and generated outputs may be deleted automatically. Operational logs and account records may be retained as needed for security, billing, and support.
+    </p>
+    <h2 class="h4 mt-4">Contact</h2>
+    <p>
+        For privacy questions, use the <a href="{{ url_for('contact') }}">contact page</a>.
+    </p>
+</main>
+{% endblock %}

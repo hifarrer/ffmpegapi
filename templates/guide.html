@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+
+{% block title %}{{ guide.title }} - FFMPEG API{% endblock %}
+{% block meta_description %}{{ guide.description }}{% endblock %}
+{% block canonical_url %}{{ guide.canonical_url }}{% endblock %}
+{% block og_type %}article{% endblock %}
+{% block og_title %}{{ guide.title }}{% endblock %}
+{% block og_description %}{{ guide.description }}{% endblock %}
+{% block og_url %}{{ guide.canonical_url }}{% endblock %}
+{% block twitter_title %}{{ guide.title }}{% endblock %}
+{% block twitter_description %}{{ guide.description }}{% endblock %}
+{% block extra_head %}
+{% if guide_json_ld %}
+<script type="application/ld+json">
+{{ guide_json_ld|safe }}
+</script>
+{% endif %}
+{% endblock %}
+{% block extra_css %}
+<style>
+    .code-block {
+        background: #111827;
+        border: 1px solid var(--bs-border-color);
+        border-radius: 0.5rem;
+        overflow-x: auto;
+    }
+
+    .code-block pre {
+        color: #e5e7eb;
+        margin: 0;
+        padding: 1rem;
+        white-space: pre;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<main class="container py-5">
+    <section class="mb-5">
+        <p class="text-primary fw-semibold mb-2">FFMPEG API Guide</p>
+        <h1 class="display-5 fw-bold mb-3">{{ guide.title }}</h1>
+        <p class="lead">{{ guide.description }}</p>
+        <div class="d-flex flex-wrap gap-2 mt-4">
+            <a class="btn btn-primary" href="{{ url_for('auth.register') }}">Get API Key</a>
+            <a class="btn btn-outline-light" href="{{ url_for('api_docs') }}">API Docs</a>
+            <a class="btn btn-outline-light" href="{{ url_for('mcp_docs') }}">MCP Server</a>
+            <a class="btn btn-outline-light" href="{{ url_for('openapi_json') }}">OpenAPI JSON</a>
+        </div>
+    </section>
+
+    <section class="mb-5">
+        <h2 class="h3 mb-3">{{ guide.endpoint.name }}</h2>
+        <p>{{ guide.endpoint.description }}</p>
+        <p><strong>Endpoint:</strong> <code>{{ guide.endpoint.method }} {{ guide.endpoint.path }}</code></p>
+        <p><strong>Authentication:</strong> send <code>X-API-Key: your_api_key_here</code>.</p>
+    </section>
+
+    <section class="mb-5">
+        <h2 class="h3 mb-3">curl Example</h2>
+        <div class="code-block">
+            <pre><code>{{ guide.curl_example }}</code></pre>
+        </div>
+    </section>
+
+    <section class="row g-4 mb-5">
+        <div class="col-lg-6">
+            <h2 class="h4 mb-3">Request Body</h2>
+            <div class="code-block">
+                <pre><code>{{ guide.request_example|tojson(indent=2) }}</code></pre>
+            </div>
+        </div>
+        <div class="col-lg-6">
+            <h2 class="h4 mb-3">Success Response</h2>
+            <div class="code-block">
+                <pre><code>{{ guide.success_example|tojson(indent=2) }}</code></pre>
+            </div>
+        </div>
+    </section>
+
+    <section class="mb-5">
+        <h2 class="h3 mb-3">Use From AI Agents</h2>
+        <p>
+            Agents can call this workflow from REST using the OpenAPI spec or from the hosted MCP server at
+            <code>https://mcp.ffmpegapi.net/mcp</code>. Keep API keys in request headers, not tool arguments.
+        </p>
+        <ul>
+            <li><a href="{{ url_for('llms_txt') }}">llms.txt</a> for a concise discovery map.</li>
+            <li><a href="{{ url_for('agent_instructions_markdown') }}">AGENTS.md</a> for agent-specific usage guidance.</li>
+            <li><a href="https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.hifarrer/ffmpegapi">Official MCP Registry listing</a>.</li>
+        </ul>
+    </section>
+
+    <section class="mb-5">
+        <h2 class="h3 mb-3">FAQ</h2>
+        <div class="accordion" id="guideFaq">
+            <div class="accordion-item">
+                <h3 class="accordion-header">
+                    <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#guide-faq-one">
+                        {{ guide.question }}
+                    </button>
+                </h3>
+                <div id="guide-faq-one" class="accordion-collapse collapse show" data-bs-parent="#guideFaq">
+                    <div class="accordion-body">{{ guide.answer }}</div>
+                </div>
+            </div>
+            <div class="accordion-item">
+                <h3 class="accordion-header">
+                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#guide-faq-two">
+                        Should I use async mode?
+                    </button>
+                </h3>
+                <div id="guide-faq-two" class="accordion-collapse collapse" data-bs-parent="#guideFaq">
+                    <div class="accordion-body">
+                        Use <code>async: true</code> for larger media, caption rendering, or jobs likely to exceed a normal HTTP timeout. Poll job status until completion.
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+</main>
+{% endblock %}

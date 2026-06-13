@@ -2,18 +2,33 @@
 <html lang="en" data-bs-theme="dark">
 <head>
     <!-- Google tag (gtag.js) -->
-    <script async src="https://www.googletagmanager.com/gtag/js?id=AW-17548478207"></script>
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-3TSWN8YEVB"></script>
     <script>
       window.dataLayer = window.dataLayer || [];
       function gtag(){dataLayer.push(arguments);}
       gtag('js', new Date());
 
       gtag('config', 'AW-17548478207');
+      gtag('config', 'G-3TSWN8YEVB');
     </script>
     
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}FFMPEG API{% endblock %}</title>
+    <meta name="description" content="{% block meta_description %}Hosted FFmpeg-style video and audio processing API for developers, automations, and AI agents.{% endblock %}">
+    <link rel="canonical" href="{% block canonical_url %}https://ffmpegapi.net{{ request.path }}{% endblock %}">
+    <meta name="robots" content="index, follow">
+    <meta property="og:site_name" content="FFMPEG API">
+    <meta property="og:type" content="{% block og_type %}website{% endblock %}">
+    <meta property="og:title" content="{% block og_title %}FFMPEG API{% endblock %}">
+    <meta property="og:description" content="{% block og_description %}Hosted FFmpeg-style video and audio processing API for developers, automations, and AI agents.{% endblock %}">
+    <meta property="og:url" content="{% block og_url %}https://ffmpegapi.net{{ request.path }}{% endblock %}">
+    <meta property="og:image" content="https://ffmpegapi.net/static/og-image.jpg">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="{% block twitter_title %}FFMPEG API{% endblock %}">
+    <meta name="twitter:description" content="{% block twitter_description %}Hosted FFmpeg-style video and audio processing API for developers, automations, and AI agents.{% endblock %}">
+    <meta name="twitter:image" content="https://ffmpegapi.net/static/og-image.jpg">
+    {% block extra_head %}{% endblock %}
     <link href="https://cdn.replit.com/agent/bootstrap-agent-dark-theme.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     {% block extra_css %}{% endblock %}
@@ -34,6 +49,9 @@
                 </a>
                 <a href="{{ url_for('mcp_docs') }}" class="btn btn-outline-light btn-sm me-2">
                     <i class="fas fa-plug me-1"></i>MCP
+                </a>
+                <a href="{{ url_for('ffmpeg_api_alternative') }}" class="btn btn-outline-light btn-sm me-2">
+                    <i class="fas fa-code-branch me-1"></i>AI Agents
                 </a>
                 <a href="{{ url_for('pricing') }}" class="btn btn-outline-light btn-sm me-2">
                     <i class="fas fa-credit-card me-1"></i>Plans
@@ -65,6 +83,16 @@
                 <i class="fas fa-film me-2"></i>
                 {{ site_settings.site_name if site_settings else 'FFMPEG API' }} - Powerful Video Processing
             </p>
+            <div class="small mt-3">
+                <a class="text-light me-3" href="{{ url_for('openapi_json') }}">OpenAPI</a>
+                <a class="text-light me-3" href="{{ url_for('llms_txt') }}">llms.txt</a>
+                <a class="text-light me-3" href="{{ url_for('llms_full_txt') }}">llms-full.txt</a>
+                <a class="text-light me-3" href="{{ url_for('docs_markdown') }}">docs.md</a>
+                <a class="text-light me-3" href="{{ url_for('examples_markdown') }}">examples.md</a>
+                <a class="text-light me-3" href="{{ url_for('skill_markdown') }}">skill.md</a>
+                <a class="text-light me-3" href="{{ url_for('privacy') }}">Privacy</a>
+                <a class="text-light" href="{{ url_for('terms') }}">Terms</a>
+            </div>
         </div>
     </footer>
 
