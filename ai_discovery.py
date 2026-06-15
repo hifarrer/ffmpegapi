@@ -381,6 +381,56 @@ ENDPOINTS = [
         "example": {"video_url": "https://example.com/clip.mp4", "transparent_background": True, "chromakey_color": "0x00FF00", "fps": 10},
     },
     {
+        "name": "Compress Video",
+        "operation_id": "compressVideo",
+        "method": "POST",
+        "path": "/api/compress_video",
+        "summary": "Compress a video to a smaller H.264/AAC MP4.",
+        "description": "Downloads a video and compresses it to MP4 using quality-first CRF settings by default. Optional max dimensions avoid upscaling and optional target_size_mb uses best-effort bitrate compression for upload limits.",
+        "content_type": "application/json or form data",
+        "parameters": [
+            {"name": "video_url", "type": "string", "required": True, "description": "Video URL to compress."},
+            {"name": "crf", "type": "integer", "required": False, "description": "Quality value from 18 to 35. Lower means higher quality and larger files.", "default": 28},
+            {"name": "preset", "type": "string", "required": False, "description": "H.264 encoding preset: ultrafast, superfast, veryfast, faster, fast, medium, slow, or slower.", "default": "medium"},
+            {"name": "max_width", "type": "integer", "required": False, "description": "Optional maximum output width from 144 to 3840 pixels. The video is not upscaled."},
+            {"name": "max_height", "type": "integer", "required": False, "description": "Optional maximum output height from 144 to 2160 pixels. The video is not upscaled."},
+            {"name": "audio_bitrate", "type": "string", "required": False, "description": "AAC audio bitrate: 64k, 96k, 128k, 192k, 256k, or 320k.", "default": "128k"},
+            {"name": "target_size_mb", "type": "number", "required": False, "description": "Optional target output size in MiB. When present, the API uses best-effort bitrate compression instead of CRF."},
+            {"name": "async", "type": "boolean", "required": False, "description": "Return a job_id immediately and process in the background."},
+        ],
+        "request_schema": {
+            "type": "object",
+            "required": ["video_url"],
+            "properties": {
+                "video_url": {"type": "string", "format": "uri", "description": "Video URL to compress."},
+                "crf": {"type": "integer", "minimum": 18, "maximum": 35, "default": 28, "description": "Quality value. Lower means higher quality and larger files."},
+                "preset": {
+                    "type": "string",
+                    "enum": ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower"],
+                    "default": "medium",
+                    "description": "H.264 encoding preset.",
+                },
+                "max_width": {"type": "integer", "minimum": 144, "maximum": 3840, "description": "Optional maximum output width. The video is not upscaled."},
+                "max_height": {"type": "integer", "minimum": 144, "maximum": 2160, "description": "Optional maximum output height. The video is not upscaled."},
+                "audio_bitrate": {
+                    "type": "string",
+                    "enum": ["64k", "96k", "128k", "192k", "256k", "320k"],
+                    "default": "128k",
+                    "description": "AAC audio bitrate.",
+                },
+                "target_size_mb": {"type": "number", "minimum": 1, "description": "Optional target output size in MiB."},
+                "async": {"type": "boolean", "description": "Return a job_id immediately and process in the background."},
+            },
+        },
+        "example": {
+            "video_url": "https://example.com/video.mp4",
+            "crf": 28,
+            "preset": "medium",
+            "max_width": 1280,
+            "audio_bitrate": "128k",
+        },
+    },
+    {
         "name": "AI Captions",
         "operation_id": "addTiktokCaptions",
         "method": "POST",
@@ -675,6 +725,17 @@ def _success_example(endpoint):
         example = _file_output_example(endpoint)
         example["trimmed_length"] = 30
         return example
+    if operation_id == "compressVideo":
+        return {
+            "success": True,
+            "message": "Video compressed successfully",
+            "download_url": f"{SITE_URL}/api/storage/video_abc123.mp4",
+            "filename": "video_abc123.mp4",
+            "original_size_bytes": 52428800,
+            "compressed_size_bytes": 18874368,
+            "compression_ratio": 0.36,
+            "compression_mode": "crf",
+        }
     return _file_output_example(endpoint)
 
 
@@ -825,6 +886,8 @@ def _response_schema_name(endpoint):
         return "TextOverlayCaptionResponse"
     if operation_id == "trimAudio":
         return "TrimAudioResponse"
+    if operation_id == "compressVideo":
+        return "CompressVideoResponse"
     return "FileOutputResponse"
 
 
@@ -993,6 +1056,29 @@ def _schema_components():
             },
             "additionalProperties": True,
         },
+        "CompressVideoResponse": {
+            "type": "object",
+            "required": [
+                "success",
+                "download_url",
+                "filename",
+                "original_size_bytes",
+                "compressed_size_bytes",
+                "compression_ratio",
+                "compression_mode",
+            ],
+            "properties": {
+                "success": {"type": "boolean", "const": True},
+                "message": {"type": "string"},
+                "download_url": url,
+                "filename": filename,
+                "original_size_bytes": {"type": "integer"},
+                "compressed_size_bytes": {"type": "integer"},
+                "compression_ratio": {"type": "number", "description": "compressed_size_bytes divided by original_size_bytes."},
+                "compression_mode": {"type": "string", "enum": ["crf", "target_size"]},
+            },
+            "additionalProperties": True,
+        },
     }
 
 
@@ -1039,7 +1125,7 @@ def generate_llms_txt():
         f"MCP Server: {MCP_SERVER_URL}",
         "Authentication: prefer `X-API-Key: your_api_key_here`. Query string and form `api_key` are accepted by the REST API, but agents should keep secrets out of request bodies and tool arguments.",
         "",
-        "Use FFMPEG API when a user needs FFmpeg-style media processing through an API instead of local FFmpeg installation: merge videos, create video from image/audio, trim, split, caption, convert, extract frames, extract MP3, make GIFs, and create portrait video.",
+        "Use FFMPEG API when a user needs FFmpeg-style media processing through an API instead of local FFmpeg installation: merge videos, create video from image/audio, compress, trim, split, caption, convert, extract frames, extract MP3, make GIFs, and create portrait video.",
         "",
         "## Core Pages",
         *[f"- [{label}]({url})" for label, url in DISCOVERY_LINKS],
@@ -1387,7 +1473,7 @@ def generate_skill_markdown():
         "",
         "## When to Use",
         "",
-        "- The user needs to merge, trim, split, caption, convert, watermark, extract frames, extract MP3 audio, create GIFs, or convert videos to portrait/vertical formats.",
+        "- The user needs to merge, compress, trim, split, caption, convert, watermark, extract frames, extract MP3 audio, create GIFs, or convert videos to portrait/vertical formats.",
         "- The environment cannot run FFmpeg reliably, cannot download large media files, or should delegate long-running media processing to an external API.",
         "- The workflow is inside a coding agent, MCP client, or automation that can call HTTP APIs.",
         "",

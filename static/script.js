@@ -20,6 +20,7 @@ class VideoMerger {
         this.initializeTiktokPortraitTab();
         this.initializeExtractAudioMp3Tab();
         this.initializeConvertVideoToGifTab();
+        this.initializeCompressVideoTab();
         this.initializeAutoCaptionTab();
         this.initializeTextOverlayTab();
         this.initializeYoutubeMp4Tab();
@@ -2894,6 +2895,141 @@ class VideoMerger {
 
     hideConvertVideoToGifResult() {
         this.convertVideoToGifResultContainer.style.display = 'none';
+    }
+
+    initializeCompressVideoTab() {
+        this.compressVideoForm = document.getElementById('compressVideoForm');
+        if (!this.compressVideoForm) {
+            return;
+        }
+
+        this.compressVideoSubmitBtn = document.getElementById('compressVideoSubmitBtn');
+        this.compressVideoProgressContainer = document.getElementById('compressVideoProgressContainer');
+        this.compressVideoAlertContainer = document.getElementById('compressVideoAlertContainer');
+        this.compressVideoResultContainer = document.getElementById('compressVideoResultContainer');
+        this.compressVideoDownloadBtn = document.getElementById('compressVideoDownloadBtn');
+        this.compressVideoResetBtn = document.getElementById('compressVideoResetBtn');
+        this.compressVideoCurrentFilename = null;
+
+        this.compressVideoForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            this.handleCompressVideoSubmit();
+        });
+
+        this.compressVideoResetBtn.addEventListener('click', () => {
+            this.resetCompressVideoForm();
+        });
+    }
+
+    async handleCompressVideoSubmit() {
+        const videoUrl = document.getElementById('compressVideoUrl').value.trim();
+        if (!videoUrl || !this.isValidUrl(videoUrl)) {
+            this.showCompressVideoAlert('danger', 'A valid video URL is required.');
+            return;
+        }
+
+        const payload = {
+            video_url: videoUrl,
+            crf: parseInt(document.getElementById('compressVideoCrf').value, 10) || 28,
+            preset: document.getElementById('compressVideoPreset').value,
+            audio_bitrate: document.getElementById('compressVideoAudioBitrate').value,
+        };
+
+        const maxWidth = document.getElementById('compressVideoMaxWidth').value.trim();
+        if (maxWidth !== '') {
+            payload.max_width = parseInt(maxWidth, 10);
+        }
+
+        const maxHeight = document.getElementById('compressVideoMaxHeight').value.trim();
+        if (maxHeight !== '') {
+            payload.max_height = parseInt(maxHeight, 10);
+        }
+
+        const targetSize = document.getElementById('compressVideoTargetSize').value.trim();
+        if (targetSize !== '') {
+            payload.target_size_mb = parseFloat(targetSize);
+        }
+
+        this.showCompressVideoProgress();
+        this.hideCompressVideoAlert();
+        this.hideCompressVideoResult();
+
+        try {
+            const response = await fetch('/api/compress_video', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-API-Key': window.API_KEY,
+                },
+                body: JSON.stringify(payload),
+            });
+
+            const result = await response.json();
+
+            if (result.success) {
+                this.compressVideoDownloadBtn.href = result.download_url;
+                this.compressVideoDownloadBtn.download = result.filename;
+                this.compressVideoCurrentFilename = result.filename;
+
+                const originalSize = this.formatFileSize(result.original_size_bytes || 0);
+                const compressedSize = this.formatFileSize(result.compressed_size_bytes || 0);
+                const ratio = typeof result.compression_ratio === 'number'
+                    ? `${Math.round((1 - result.compression_ratio) * 100)}% smaller`
+                    : 'compression complete';
+                document.getElementById('compressVideoResultMessage').textContent =
+                    `${originalSize} to ${compressedSize} (${ratio}, ${result.compression_mode || 'crf'} mode).`;
+
+                this.showCompressVideoResult();
+                this.showCompressVideoAlert('success', result.message || 'Video compressed successfully.');
+            } else {
+                this.showCompressVideoAlert('danger', `Error: ${result.error}`);
+            }
+        } catch (error) {
+            console.error('Compress video error:', error);
+            this.showCompressVideoAlert('danger', `An error occurred: ${error.message}`);
+        } finally {
+            this.hideCompressVideoProgress();
+        }
+    }
+
+    resetCompressVideoForm() {
+        this.compressVideoForm.reset();
+        this.hideCompressVideoAlert();
+        this.hideCompressVideoResult();
+        this.hideCompressVideoProgress();
+        this.compressVideoCurrentFilename = null;
+    }
+
+    showCompressVideoProgress() {
+        this.compressVideoProgressContainer.style.display = 'block';
+        this.compressVideoSubmitBtn.disabled = true;
+    }
+
+    hideCompressVideoProgress() {
+        this.compressVideoProgressContainer.style.display = 'none';
+        this.compressVideoSubmitBtn.disabled = false;
+    }
+
+    showCompressVideoAlert(type, message) {
+        this.compressVideoAlertContainer.innerHTML = `
+            <div class="alert alert-${type} alert-dismissible fade show" role="alert">
+                <i class="fas fa-${this.getAlertIcon(type)} me-2"></i>
+                ${message}
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+        `;
+    }
+
+    hideCompressVideoAlert() {
+        this.compressVideoAlertContainer.innerHTML = '';
+    }
+
+    showCompressVideoResult() {
+        this.compressVideoResultContainer.style.display = 'block';
+    }
+
+    hideCompressVideoResult() {
+        this.compressVideoResultContainer.style.display = 'none';
     }
 
     initializeAutoCaptionTab() {

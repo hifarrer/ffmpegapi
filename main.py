@@ -4463,6 +4463,8 @@ def process_job_async(job_id):
                 result = process_neonvideo_merge_videos_job(job, input_data)
             elif job.job_type == 'add_watermark':
                 result = process_add_watermark_job(job, input_data)
+            elif job.job_type == 'compress_video':
+                result = process_compress_video_job(job, input_data)
             else:
                 safe_update_job_status_by_id(job_id, 'failed', f'Unknown job type: {job.job_type}')
                 return
@@ -7410,6 +7412,338 @@ def _parse_optional_int_clamped(val, default, min_v, max_v):
         return max(min_v, min(n, max_v))
     except (ValueError, TypeError):
         return default
+
+
+COMPRESS_VIDEO_PRESETS = {
+    'ultrafast',
+    'superfast',
+    'veryfast',
+    'faster',
+    'fast',
+    'medium',
+    'slow',
+    'slower',
+}
+COMPRESS_VIDEO_AUDIO_BITRATES = {'64k', '96k', '128k', '192k', '256k', '320k'}
+
+
+def _parse_optional_int_range(value, name, default, min_value, max_value):
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return default, None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None, f'{name} must be an integer'
+    if parsed < min_value or parsed > max_value:
+        return None, f'{name} must be between {min_value} and {max_value}'
+    return parsed, None
+
+
+def _parse_optional_float_min(value, name, min_value):
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None, None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None, f'{name} must be a number'
+    if parsed < min_value:
+        return None, f'{name} must be at least {min_value:g}'
+    return parsed, None
+
+
+def _validate_compress_video_input(data):
+    data = data or {}
+    video_url = data.get('video_url')
+    if not video_url or not str(video_url).strip():
+        return None, 'video_url is required'
+
+    crf, error = _parse_optional_int_range(data.get('crf'), 'crf', 28, 18, 35)
+    if error:
+        return None, error
+
+    preset = str(data.get('preset') or 'medium').strip().lower()
+    if preset not in COMPRESS_VIDEO_PRESETS:
+        return None, 'preset must be one of ultrafast, superfast, veryfast, faster, fast, medium, slow, slower'
+
+    max_width, error = _parse_optional_int_range(data.get('max_width'), 'max_width', None, 144, 3840)
+    if error:
+        return None, error
+
+    max_height, error = _parse_optional_int_range(data.get('max_height'), 'max_height', None, 144, 2160)
+    if error:
+        return None, error
+
+    audio_bitrate = str(data.get('audio_bitrate') or '128k').strip().lower()
+    if audio_bitrate not in COMPRESS_VIDEO_AUDIO_BITRATES:
+        return None, 'audio_bitrate must be one of 64k, 96k, 128k, 192k, 256k, 320k'
+
+    target_size_mb, error = _parse_optional_float_min(data.get('target_size_mb'), 'target_size_mb', 1)
+    if error:
+        return None, error
+
+    return {
+        'video_url': str(video_url).strip(),
+        'crf': crf,
+        'preset': preset,
+        'max_width': max_width,
+        'max_height': max_height,
+        'audio_bitrate': audio_bitrate,
+        'target_size_mb': target_size_mb,
+        'async': _parse_json_or_form_bool(data.get('async')),
+    }, None
+
+
+def _output_download_url(filename):
+    if os.environ.get('REPLIT_DEPLOYMENT'):
+        return f"https://ffmpegapi.net/download/{filename}"
+    if os.environ.get('REPLIT_DEV_DOMAIN'):
+        return f"https://{os.environ['REPLIT_DEV_DOMAIN']}/download/{filename}"
+    return url_for('download_file', filename=filename, _external=True)
+
+
+def _scaled_even_dimensions(video_path, max_width=None, max_height=None):
+    dims_ok, dims_data = get_video_dimensions(video_path)
+    if not dims_ok:
+        return None, f"Could not read source video dimensions: {dims_data}"
+
+    source_width, source_height = dims_data
+    scale_factor = 1.0
+    if max_width:
+        scale_factor = min(scale_factor, max_width / source_width)
+    if max_height:
+        scale_factor = min(scale_factor, max_height / source_height)
+    scale_factor = min(scale_factor, 1.0)
+
+    target_width = max(2, int(source_width * scale_factor))
+    target_height = max(2, int(source_height * scale_factor))
+    if target_width % 2:
+        target_width -= 1
+    if target_height % 2:
+        target_height -= 1
+
+    if target_width != source_width or target_height != source_height:
+        return (target_width, target_height), None
+    return None, None
+
+
+def compress_video_with_ffmpeg(
+    video_path,
+    output_path,
+    *,
+    crf=28,
+    preset='medium',
+    max_width=None,
+    max_height=None,
+    audio_bitrate='128k',
+    target_size_mb=None,
+):
+    """Compress a video to H.264/AAC MP4 using CRF or best-effort target size mode."""
+    try:
+        scale_dimensions, error = _scaled_even_dimensions(video_path, max_width, max_height)
+        if error:
+            return False, error, None
+
+        compression_mode = 'crf'
+        video_args = ['-crf', str(crf)]
+
+        if target_size_mb is not None:
+            duration, duration_error = get_media_duration(video_path)
+            if duration_error:
+                return False, f'Unable to calculate target bitrate: {duration_error}', None
+
+            audio_kbps = int(str(audio_bitrate).rstrip('k'))
+            total_kbps = int((target_size_mb * 8192) / duration)
+            video_kbps = total_kbps - audio_kbps
+            if video_kbps < 100:
+                return False, 'target_size_mb is too small for the source duration and selected audio_bitrate', None
+
+            compression_mode = 'target_size'
+            video_args = [
+                '-b:v', f'{video_kbps}k',
+                '-maxrate', f'{max(video_kbps, int(video_kbps * 1.5))}k',
+                '-bufsize', f'{max(video_kbps * 2, int(video_kbps * 3))}k',
+            ]
+
+        cmd = [
+            'ffmpeg',
+            '-hide_banner',
+            '-i', video_path,
+            '-map', '0:v:0',
+            '-map', '0:a?',
+        ]
+
+        if scale_dimensions:
+            width, height = scale_dimensions
+            cmd.extend(['-vf', f'scale={width}:{height}'])
+
+        cmd.extend([
+            '-c:v', 'libx264',
+            '-preset', preset,
+            *video_args,
+            '-pix_fmt', 'yuv420p',
+            '-c:a', 'aac',
+            '-b:a', audio_bitrate,
+            '-movflags', '+faststart',
+            '-y',
+            output_path,
+        ])
+
+        logging.info(f"Running FFMPEG compress command: {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+
+        if result.returncode == 0:
+            if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+                return False, 'Video compression produced no output', None
+            return True, 'Video compressed successfully', compression_mode
+
+        error_msg = _ffmpeg_error_message_from_stderr(result.stderr, result.stdout)
+        logging.error(f"FFMPEG compress error (returncode {result.returncode}): {error_msg}")
+        return False, f'Video compression failed: {error_msg}', None
+
+    except subprocess.TimeoutExpired:
+        logging.error("Video compression timed out")
+        return False, 'Video compression processing timed out', None
+    except Exception as e:
+        logging.error(f"Video compression error: {str(e)}", exc_info=True)
+        return False, f'Video compression error: {str(e)}', None
+
+
+def process_compress_video_payload(input_data):
+    validated, error = _validate_compress_video_input(input_data)
+    if error:
+        return {'success': False, 'error': error}
+
+    request_id = str(uuid.uuid4())
+    video_url = validated['video_url']
+    video_ext = video_url.split('.')[-1].split('?')[0].lower() if '.' in video_url else 'mp4'
+    if video_ext not in ['mp4', 'mov', 'avi', 'mkv', 'webm', 'flv', 'wmv']:
+        video_ext = 'mp4'
+
+    video_filename = f"{request_id}_video.{video_ext}"
+    video_path = os.path.join(UPLOAD_FOLDER, video_filename)
+    output_filename = f"{request_id}_compressed.mp4"
+    output_path = os.path.join(OUTPUT_FOLDER, output_filename)
+
+    try:
+        success, message = download_file_from_url(video_url, video_path, "video")
+        if not success:
+            return {'success': False, 'error': message}
+
+        original_size = os.path.getsize(video_path)
+        ok, msg, compression_mode = compress_video_with_ffmpeg(
+            video_path,
+            output_path,
+            crf=validated['crf'],
+            preset=validated['preset'],
+            max_width=validated['max_width'],
+            max_height=validated['max_height'],
+            audio_bitrate=validated['audio_bitrate'],
+            target_size_mb=validated['target_size_mb'],
+        )
+        cleanup_file(video_path)
+
+        if not ok:
+            if os.path.exists(output_path):
+                cleanup_file(output_path)
+            return {'success': False, 'error': msg}
+
+        compressed_size = os.path.getsize(output_path)
+        storage_url = upload_to_storage(output_path, output_filename)
+        if storage_url:
+            cleanup_file(output_path)
+            download_url = storage_url
+        else:
+            download_url = _output_download_url(output_filename)
+
+        compression_ratio = round(compressed_size / original_size, 4) if original_size else None
+        return {
+            'success': True,
+            'message': msg,
+            'download_url': download_url,
+            'filename': output_filename,
+            'original_size_bytes': original_size,
+            'compressed_size_bytes': compressed_size,
+            'compression_ratio': compression_ratio,
+            'compression_mode': compression_mode or 'crf',
+        }
+
+    except Exception as e:
+        cleanup_file(video_path)
+        if os.path.exists(output_path):
+            cleanup_file(output_path)
+        logging.error(f"[COMPRESS_VIDEO] Error: {str(e)}", exc_info=True)
+        return {'success': False, 'error': f'Server error: {str(e)}'}
+
+
+def process_compress_video_job(job, input_data):
+    """Process compress_video job."""
+    return process_compress_video_payload(input_data)
+
+
+@app.route('/api/compress_video', methods=['POST'])
+@log_api_request
+@require_api_key
+def compress_video():
+    """Compress a video with CRF or best-effort target-size settings."""
+    api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
+    logging.info(f"[COMPRESS_VIDEO] Request from API key: {api_key[:20] if api_key else 'None'}...")
+
+    try:
+        data = request.get_json(silent=True) if request.is_json else dict(request.form.items())
+        validated, error = _validate_compress_video_input(data)
+        if error:
+            return jsonify({'success': False, 'error': error}), 400
+
+        if validated.get('async'):
+            user_id = getattr(request, 'api_user_id', None)
+            if not user_id:
+                key_record = ApiKey.query.filter_by(key=api_key, is_active=True).first()
+                user_id = key_record.user_id if key_record else None
+            if not user_id:
+                return jsonify({'success': False, 'error': 'Invalid or inactive API key.'}), 401
+
+            job = Job(
+                user_id=user_id,
+                job_type='compress_video',
+                status='pending',
+                input_data=json.dumps(validated),
+            )
+            db.session.add(job)
+            db.session.commit()
+
+            thread = threading.Thread(target=process_job_async, args=(job.job_id,))
+            thread.daemon = True
+            thread.start()
+
+            return jsonify({
+                'success': True,
+                'job_id': job.job_id,
+                'status': 'pending',
+                'message': 'Job submitted for async processing. Use /api/job/{job_id}/status to check progress.',
+                'status_url': url_for('get_job_status', job_id=job.job_id, _external=True),
+            }), 202
+
+        result = process_compress_video_payload(validated)
+        if result.get('success'):
+            return jsonify(result)
+        error_message = result.get('error', 'Video compression failed')
+        client_error_prefixes = (
+            'video_url is required',
+            'target_size_mb is too small',
+            'Invalid URL',
+            'URL resolves to private/local IP address',
+            'Could not resolve hostname',
+            'Download timed out',
+            'Connection error',
+            'HTTP error',
+            'Failed to download',
+        )
+        status_code = 400 if error_message.startswith(client_error_prefixes) else 500
+        return jsonify(result), status_code
+
+    except Exception as e:
+        logging.error(f"[COMPRESS_VIDEO] Error: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'error': f'Server error: {str(e)}'}), 500
 
 
 @app.route('/api/extract_audio_mp3', methods=['POST'])

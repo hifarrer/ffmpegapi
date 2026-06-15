@@ -3,7 +3,7 @@
   "name": "io.github.hifarrer/ffmpegapi",
   "title": "FFMPEG API",
   "description": "Hosted MCP tools for FFmpeg-style video and audio processing through FFMPEG API.",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "repository": {
     "url": "https://github.com/hifarrer/ffmpegapi-agent-docs",
     "source": "github"

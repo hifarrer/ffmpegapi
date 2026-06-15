@@ -145,6 +145,7 @@
                                 <a class="toc-link ms-3" href="#convert-to-tiktok-portrait">TikTok Portrait Converter</a>
                                 <a class="toc-link ms-3" href="#extract-audio-mp3">Extract Audio as MP3</a>
                                 <a class="toc-link ms-3" href="#convert-video-to-gif">Convert video to GIF</a>
+                                <a class="toc-link ms-3" href="#compress-video">Compress Video</a>
                                 <a class="toc-link ms-3" href="#ai-captions-remotion">AI Captions (Remotion)</a>
                                 <a class="toc-link ms-3" href="#text-overlay-captions-remotion">Text Overlay Captions (Remotion)</a>
                                 <a class="toc-link ms-3" href="#youtube-to-mp4">YouTube to MP4</a>
@@ -170,7 +171,7 @@
                 <!-- Overview -->
                 <section id="overview" class="mb-5">
                     <h2><i class="fas fa-info-circle me-2"></i>Overview</h2>
-                    <p>The FFMPEG Video Merger API provides nine powerful video processing capabilities:</p>
+                    <p>The FFMPEG Video Processing API provides hosted FFmpeg workflows for common video and audio automation tasks:</p>
                     
                     <div class="row">
                         <div class="col-md-4 mb-3">
@@ -3106,6 +3107,141 @@ if ($result['success']) {
 }</code></pre>
                                         </div>
                                     </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Compress Video -->
+                    <div id="compress-video" class="api-endpoint">
+                        <div class="card">
+                            <div class="card-header">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <h4 class="mb-0">Compress Video</h4>
+                                    <span class="method-badge method-post">POST</span>
+                                </div>
+                                <code class="text-muted">/api/compress_video</code>
+                            </div>
+                            <div class="card-body">
+                                <p>Compress a video into an H.264/AAC MP4. By default, this endpoint uses quality-first CRF compression. If <code>target_size_mb</code> is provided, it switches to best-effort bitrate compression for upload-size limits.</p>
+
+                                <h6>Request Format</h6>
+                                <p><strong>Content-Type:</strong> <code>application/json</code> (form fields are also accepted)</p>
+
+                                <h6>Parameters</h6>
+                                <div class="table-responsive">
+                                    <table class="table table-sm">
+                                        <thead>
+                                            <tr>
+                                                <th>Parameter</th>
+                                                <th>Type</th>
+                                                <th>Required</th>
+                                                <th>Description</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <tr>
+                                                <td><code>video_url</code></td>
+                                                <td>String</td>
+                                                <td>Yes</td>
+                                                <td>URL of the source video to compress</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>crf</code></td>
+                                                <td>Integer</td>
+                                                <td>No</td>
+                                                <td>Quality value from <code>18</code> to <code>35</code>. Lower means higher quality and larger files. Default: <code>28</code></td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>preset</code></td>
+                                                <td>String</td>
+                                                <td>No</td>
+                                                <td>Encoding speed preset: <code>ultrafast</code>, <code>superfast</code>, <code>veryfast</code>, <code>faster</code>, <code>fast</code>, <code>medium</code>, <code>slow</code>, or <code>slower</code>. Default: <code>medium</code></td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>max_width</code></td>
+                                                <td>Integer</td>
+                                                <td>No</td>
+                                                <td>Optional max output width from <code>144</code> to <code>3840</code>. The video is not upscaled.</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>max_height</code></td>
+                                                <td>Integer</td>
+                                                <td>No</td>
+                                                <td>Optional max output height from <code>144</code> to <code>2160</code>. The video is not upscaled.</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>audio_bitrate</code></td>
+                                                <td>String</td>
+                                                <td>No</td>
+                                                <td>AAC audio bitrate: <code>64k</code>, <code>96k</code>, <code>128k</code>, <code>192k</code>, <code>256k</code>, or <code>320k</code>. Default: <code>128k</code></td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>target_size_mb</code></td>
+                                                <td>Number</td>
+                                                <td>No</td>
+                                                <td>Optional target output size in MiB. When present, the API uses bitrate compression instead of CRF and returns an error if the target is too small.</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>async</code></td>
+                                                <td>Boolean</td>
+                                                <td>No</td>
+                                                <td>Set to <code>true</code> to return a job immediately and process in the background.</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+
+                                <h6>cURL Example</h6>
+                                <div class="code-block p-3">
+                                    <pre><code class="language-bash">curl -X POST "https://ffmpegapi.net/api/compress_video" \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "video_url": "https://example.com/video.mp4",
+    "crf": 28,
+    "preset": "medium",
+    "max_width": 1280,
+    "audio_bitrate": "128k"
+  }'</code></pre>
+                                </div>
+
+                                <h6>Success Response</h6>
+                                <div class="code-block p-3">
+                                    <pre><code class="language-json">{
+  "success": true,
+  "message": "Video compressed successfully",
+  "download_url": "https://ffmpegapi.net/api/storage/uuid_compressed.mp4",
+  "filename": "uuid_compressed.mp4",
+  "original_size_bytes": 52428800,
+  "compressed_size_bytes": 18874368,
+  "compression_ratio": 0.36,
+  "compression_mode": "crf"
+}</code></pre>
+                                </div>
+
+                                <h6>Async Response</h6>
+                                <div class="code-block p-3">
+                                    <pre><code class="language-json">{
+  "success": true,
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "pending",
+  "message": "Job submitted for async processing. Use /api/job/{job_id}/status to check progress.",
+  "status_url": "https://ffmpegapi.net/api/job/550e8400-e29b-41d4-a716-446655440000/status"
+}</code></pre>
+                                </div>
+
+                                <h6>Error Response</h6>
+                                <div class="code-block p-3">
+                                    <pre><code class="language-json">{
+  "success": false,
+  "error": "crf must be between 18 and 35"
+}</code></pre>
+                                </div>
+
+                                <div class="alert alert-info mt-3">
+                                    <i class="fas fa-info-circle me-2"></i>
+                                    <strong>Tip:</strong> Use CRF mode for predictable quality. Use <code>target_size_mb</code> only when you must fit a strict upload limit.
                                 </div>
                             </div>
                         </div>
