@@ -130,6 +130,7 @@
                                 <a class="toc-link ms-3" href="#merge-image-audio">Image & Audio Merge</a>
                                 <a class="toc-link ms-3" href="#merge-videos">Video Merge</a>
                                 <a class="toc-link ms-3" href="#video-loop">Video Loop</a>
+                                <a class="toc-link ms-3" href="#endless-loop">Endless Loop</a>
                                 <a class="toc-link ms-3" href="#picture-in-picture">Picture in Picture</a>
                                 <a class="toc-link ms-3" href="#add-watermark">Add Watermark</a>
                                 <a class="toc-link ms-3" href="#add-subtitles">Add Subtitles</a>
@@ -270,6 +271,15 @@
                                     <i class="fas fa-sync-alt fa-2x text-primary mb-3"></i>
                                     <h5>Video Loop</h5>
                                     <p class="small">Repeat a single video multiple times or automatically to match an audio track length</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3 mb-3">
+                            <div class="card h-100">
+                                <div class="card-body text-center">
+                                    <i class="fas fa-infinity fa-2x text-primary mb-3"></i>
+                                    <h5>Endless Loop</h5>
+                                    <p class="small">Repeat a single video until an exact target duration is reached</p>
                                 </div>
                             </div>
                         </div>
@@ -793,6 +803,94 @@
 
                                 <p class="small text-muted mt-2">
                                     <strong>Note:</strong> Durations are estimated from ffprobe and may vary slightly depending on the source files.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Endless Loop -->
+                    <div id="endless-loop" class="api-endpoint">
+                        <div class="card">
+                            <div class="card-header">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <h4 class="mb-0">Endless Loop</h4>
+                                    <span class="method-badge method-post">POST</span>
+                                </div>
+                                <code class="text-muted">/api/endless_loop</code>
+                            </div>
+                            <div class="card-body">
+                                <p>Create a looping video from one video URL with an exact target duration in seconds. If the target duration is not an exact multiple of the source video duration, the final loop is trimmed.</p>
+
+                                <h6>Request Format</h6>
+                                <p><strong>Content-Type:</strong> <code>application/json</code> (form data is also supported)</p>
+
+                                <h6 class="mt-4 mb-3">Request Parameters</h6>
+                                <div class="table-responsive">
+                                    <table class="table table-dark table-striped">
+                                        <thead>
+                                            <tr>
+                                                <th>Parameter</th>
+                                                <th>Type</th>
+                                                <th>Required</th>
+                                                <th>Description</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <tr>
+                                                <td><code>video_url</code></td>
+                                                <td>string</td>
+                                                <td>Yes</td>
+                                                <td>URL of the video to loop (supports MP4, MOV, AVI, MKV, WebM, FLV, WMV)</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>duration</code></td>
+                                                <td>number</td>
+                                                <td>Yes</td>
+                                                <td>Target output duration in seconds. Must be positive; fractional seconds are supported.</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>watermark_url</code></td>
+                                                <td>string</td>
+                                                <td>No</td>
+                                                <td>Optional image URL for a watermark logo. The image is scaled and placed in the bottom-right corner of the final video.</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+
+                                <div class="alert alert-info mt-3">
+                                    <i class="fas fa-info-circle me-2"></i>
+                                    <strong>Looping logic:</strong> The API uses the requested <code>duration</code> as the final output length. It reports <code>ceil(duration / video_duration)</code> as <code>loops_required</code> and trims the final repetition when needed.
+                                </div>
+
+                                <h6 class="mt-4 mb-3">Example Request</h6>
+                                <div class="code-block p-3">
+<pre><code class="language-bash">curl -X POST "https://ffmpegapi.net/api/endless_loop" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your_api_key_here" \
+  -d '{
+    "video_url": "https://example.com/clip.mp4",
+    "duration": 1205
+  }'</code></pre>
+                                </div>
+
+                                <h6 class="mt-4 mb-3">Success Response</h6>
+                                <div class="code-block p-3">
+<pre><code class="language-json">{
+  "success": true,
+  "message": "Endless loop created successfully",
+  "download_url": "https://ffmpegapi.net/download/looped_video.mp4",
+  "filename": "550e8400-e29b-41d4-a716-446655440000_endless_loop.mp4",
+  "loops_required": 11,
+  "video_duration_seconds": 120.0,
+  "target_duration_seconds": 1205.0,
+  "estimated_full_loops": 10,
+  "partial_final_loop_seconds": 5.0
+}</code></pre>
+                                </div>
+
+                                <p class="small text-muted mt-2">
+                                    <strong>Note:</strong> FFmpeg trims to the requested duration as closely as possible within video frame boundaries.
                                 </p>
                             </div>
                         </div>

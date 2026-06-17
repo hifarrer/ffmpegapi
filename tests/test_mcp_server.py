@@ -13,8 +13,9 @@ class McpCatalogTests(unittest.TestCase):
         tools = mcp_tool_definitions()
         names = {tool.name for tool in tools}
 
-        self.assertEqual(len(tools), 24)
+        self.assertEqual(len(tools), 25)
         self.assertIn("compress_video", names)
+        self.assertIn("endless_loop", names)
         self.assertIn("neonvideo_merge_videos", names)
         self.assertIn("get_job_status", names)
         self.assertNotIn("cleanup_old_videos", names)
@@ -33,6 +34,7 @@ class McpCatalogTests(unittest.TestCase):
         self.assertIn("image_url", json.dumps(output_schemas["get_first_frame_image"]))
         self.assertIn("captions_json_url", json.dumps(output_schemas["add_tiktok_captions"]))
         self.assertIn("compression_ratio", json.dumps(output_schemas["compress_video"]))
+        self.assertIn("loops_required", json.dumps(output_schemas["endless_loop"]))
         self.assertNotEqual(output_schemas["merge_videos"]["properties"]["response"], {"type": "object"})
 
     def test_neonvideo_schema_matches_endpoint_metadata(self):

@@ -163,6 +163,34 @@ curl -X POST "https://ffmpegapi.net/api/video_loop" \
 
 Typical successful response fields include `success`, `message`, `download_url`, and `filename` for file-producing endpoints. Split endpoints may return arrays of part or segment URLs. Caption endpoints may return caption artifact URLs.
 
+### Endless Loop
+
+`POST /api/endless_loop`
+
+Repeats one video until a requested duration in seconds is reached. If the duration is not an exact multiple of the source video length, the final loop is trimmed to the exact target duration. Optional watermark overlay is supported.
+
+Content type: `application/json or form data`
+
+Parameters:
+
+- `video_url` (string, required): Video URL to loop.
+- `duration` (number, required): Target output duration in seconds. Must be positive; fractional seconds are supported.
+- `watermark_url` (string, optional): Optional watermark image URL.
+
+Example:
+
+```bash
+curl -X POST "https://ffmpegapi.net/api/endless_loop" \
+  -H "X-API-Key: your_api_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+  "video_url": "https://example.com/clip.mp4",
+  "duration": 1205
+}'
+```
+
+Typical successful response fields include `success`, `message`, `download_url`, `filename`, `loops_required`, `video_duration_seconds`, `target_duration_seconds`, `estimated_full_loops`, and `partial_final_loop_seconds`.
+
 ### Picture in Picture
 
 `POST /api/picture_in_picture`

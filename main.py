@@ -6638,6 +6638,43 @@ def trim_video_with_ffmpeg(video_path, output_path, start_time, end_time):
         return False, f"Video trimming error: {str(e)}"
 
 
+def create_endless_loop_with_ffmpeg(video_path, output_path, duration):
+    """Loop one video until the requested duration is reached."""
+    try:
+        cmd = [
+            'ffmpeg',
+            '-stream_loop', '-1',
+            '-i', video_path,
+            '-t', str(duration),
+            '-c:v', 'libx264',
+            '-preset', 'veryfast',
+            '-crf', '23',
+            '-c:a', 'aac',
+            '-b:a', '192k',
+            '-pix_fmt', 'yuv420p',
+            '-movflags', '+faststart',
+            '-y',
+            output_path
+        ]
+
+        logging.info(f"[ENDLESS_LOOP] Running FFMPEG command: {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+
+        if result.returncode == 0:
+            logging.info("[ENDLESS_LOOP] Video loop processing completed successfully")
+            return True, "Endless loop created successfully"
+
+        logging.error(f"[ENDLESS_LOOP] FFmpeg error: {result.stderr}")
+        return False, f"Endless loop processing failed: {result.stderr}"
+
+    except subprocess.TimeoutExpired:
+        logging.error("[ENDLESS_LOOP] Video loop processing timed out")
+        return False, "Endless loop processing timed out"
+    except Exception as e:
+        logging.error(f"[ENDLESS_LOOP] Video loop processing error: {str(e)}")
+        return False, f"Endless loop error: {str(e)}"
+
+
 def get_video_duration(video_path):
     """Get video duration in seconds using ffprobe"""
     try:
@@ -7237,6 +7274,165 @@ def video_loop():
             raise e
     except Exception as e:
         logging.error(f"[VIDEO_LOOP] Error: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'error': f'Server error: {str(e)}'}), 500
+
+
+@app.route('/api/endless_loop', methods=['POST'])
+@log_api_request
+@require_api_key
+def endless_loop():
+    """API endpoint to loop one video until an exact target duration is reached."""
+    api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
+    logging.info(f"[ENDLESS_LOOP] Request received from API key: {api_key[:20] if api_key else 'None'}...")
+
+    try:
+        import math
+
+        request_id = str(uuid.uuid4())
+
+        if request.is_json:
+            data = request.get_json() or {}
+            video_url = data.get('video_url')
+            duration_raw = data.get('duration')
+            watermark_url = data.get('watermark_url')
+        else:
+            video_url = request.form.get('video_url')
+            duration_raw = request.form.get('duration')
+            watermark_url = request.form.get('watermark_url')
+
+        if not video_url or not str(video_url).strip():
+            return jsonify({'success': False, 'error': 'video_url is required'}), 400
+
+        if duration_raw is None or str(duration_raw).strip() == '':
+            return jsonify({'success': False, 'error': 'duration is required'}), 400
+
+        try:
+            target_duration = float(duration_raw)
+        except (ValueError, TypeError):
+            return jsonify({'success': False, 'error': 'duration must be a positive number of seconds'}), 400
+
+        if not math.isfinite(target_duration) or target_duration <= 0:
+            return jsonify({'success': False, 'error': 'duration must be a positive number of seconds'}), 400
+
+        video_url = str(video_url).strip()
+        watermark_url = str(watermark_url).strip() if watermark_url else None
+
+        video_ext = video_url.split('.')[-1].split('?')[0].lower() if '.' in video_url else 'mp4'
+        if video_ext not in ['mp4', 'mov', 'avi', 'mkv', 'webm', 'flv', 'wmv']:
+            video_ext = 'mp4'
+        video_filename = f"{request_id}_video.{video_ext}"
+        video_path = os.path.join(UPLOAD_FOLDER, video_filename)
+
+        resolved, local_path = resolve_local_download_url(video_url)
+        if resolved:
+            try:
+                shutil.copy2(local_path, video_path)
+                success, message = True, "Video copied from local storage"
+                logging.info(f"[ENDLESS_LOOP] Using local file for video: {local_path}")
+            except Exception as e:
+                success, message = False, str(e)
+        else:
+            success, message = download_video_from_url(video_url, video_path)
+        if not success:
+            return jsonify({'success': False, 'error': message}), 400
+
+        watermark_path = None
+        try:
+            if watermark_url:
+                watermark_ext = watermark_url.split('.')[-1].split('?')[0].lower() if '.' in watermark_url else 'png'
+                if watermark_ext not in ['png', 'jpg', 'jpeg', 'webp']:
+                    watermark_ext = 'png'
+                watermark_filename = f"{request_id}_watermark.{watermark_ext}"
+                watermark_path = os.path.join(UPLOAD_FOLDER, watermark_filename)
+                resolved_wm, local_wm_path = resolve_local_download_url(watermark_url)
+                if resolved_wm:
+                    try:
+                        shutil.copy2(local_wm_path, watermark_path)
+                        logging.info(f"[ENDLESS_LOOP] Using local file for watermark: {local_wm_path}")
+                    except Exception as e:
+                        cleanup_file(video_path)
+                        return jsonify({'success': False, 'error': f'Failed to copy watermark: {str(e)}'}), 400
+                else:
+                    success, message = download_file_from_url(watermark_url, watermark_path, "watermark image")
+                    if not success:
+                        cleanup_file(video_path)
+                        return jsonify({'success': False, 'error': f'Failed to download watermark: {message}'}), 400
+
+            video_duration, err = get_video_duration(video_path)
+            if err is not None:
+                cleanup_file(video_path)
+                if watermark_path:
+                    cleanup_file(watermark_path)
+                return jsonify({'success': False, 'error': err}), 400
+
+            loops_required = max(1, int(math.ceil(target_duration / video_duration)))
+            estimated_full_loops = int(target_duration // video_duration)
+            partial_final_loop_seconds = target_duration - (estimated_full_loops * video_duration)
+            if math.isclose(partial_final_loop_seconds, 0, abs_tol=0.001):
+                partial_final_loop_seconds = 0
+
+            output_filename = f"{request_id}_endless_loop.mp4"
+            output_path = os.path.join(OUTPUT_FOLDER, output_filename)
+
+            success, loop_message = create_endless_loop_with_ffmpeg(video_path, output_path, target_duration)
+
+            cleanup_file(video_path)
+
+            if not success:
+                if os.path.exists(output_path):
+                    cleanup_file(output_path)
+                if watermark_path:
+                    cleanup_file(watermark_path)
+                return jsonify({'success': False, 'error': loop_message or 'Endless loop processing failed'}), 500
+
+            if watermark_path:
+                watermarked_filename = f"{request_id}_endless_loop_watermarked.mp4"
+                watermarked_output_path = os.path.join(OUTPUT_FOLDER, watermarked_filename)
+                watermark_success, watermark_message = add_watermark_with_ffmpeg(output_path, watermark_path, watermarked_output_path)
+                cleanup_file(watermark_path)
+                if watermark_success:
+                    cleanup_file(output_path)
+                    output_path = watermarked_output_path
+                    output_filename = watermarked_filename
+                    loop_message = "Endless loop created with watermark successfully"
+                else:
+                    cleanup_file(watermarked_output_path)
+                    cleanup_file(output_path)
+                    return jsonify({
+                        'success': False,
+                        'error': f'Endless loop succeeded but watermark failed: {watermark_message}'
+                    }), 500
+
+            storage_url = upload_to_storage(output_path, output_filename)
+            if storage_url:
+                cleanup_file(output_path)
+                download_url = storage_url
+            else:
+                if os.environ.get('REPLIT_DEPLOYMENT'):
+                    download_url = f"https://ffmpegapi.net/download/{output_filename}"
+                elif os.environ.get('REPLIT_DEV_DOMAIN'):
+                    download_url = f"https://{os.environ['REPLIT_DEV_DOMAIN']}/download/{output_filename}"
+                else:
+                    download_url = url_for('download_file', filename=output_filename, _external=True)
+
+            return jsonify({
+                'success': True,
+                'message': loop_message or 'Endless loop created successfully',
+                'download_url': download_url,
+                'filename': output_filename,
+                'loops_required': loops_required,
+                'video_duration_seconds': video_duration,
+                'target_duration_seconds': target_duration,
+                'estimated_full_loops': estimated_full_loops,
+                'partial_final_loop_seconds': partial_final_loop_seconds
+            })
+        except Exception as e:
+            cleanup_file(video_path)
+            if watermark_path:
+                cleanup_file(watermark_path)
+            raise e
+    except Exception as e:
+        logging.error(f"[ENDLESS_LOOP] Error: {str(e)}", exc_info=True)
         return jsonify({'success': False, 'error': f'Server error: {str(e)}'}), 500
 
 

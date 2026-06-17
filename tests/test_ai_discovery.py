@@ -63,14 +63,20 @@ class OpenApiDiscoveryTests(unittest.TestCase):
     def test_openapi_has_all_public_endpoint_contracts(self):
         spec = generate_openapi_spec()
         self.assertEqual(spec["openapi"], "3.1.0")
-        self.assertEqual(len(spec["paths"]), 24)
+        self.assertEqual(len(spec["paths"]), 25)
         self.assertIn("ErrorResponse", spec["components"]["schemas"])
         self.assertIn("AsyncJobResponse", spec["components"]["schemas"])
         self.assertIn("CompressVideoResponse", spec["components"]["schemas"])
+        self.assertIn("EndlessLoopResponse", spec["components"]["schemas"])
         self.assertIn("/api/compress_video", spec["paths"])
+        self.assertIn("/api/endless_loop", spec["paths"])
         self.assertEqual(
             spec["paths"]["/api/compress_video"]["post"]["operationId"],
             "compressVideo",
+        )
+        self.assertEqual(
+            spec["paths"]["/api/endless_loop"]["post"]["operationId"],
+            "endlessLoop",
         )
 
         for endpoint in ENDPOINTS:

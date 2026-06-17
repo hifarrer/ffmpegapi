@@ -152,6 +152,21 @@ ENDPOINTS = [
         "example": {"video_url": "https://example.com/clip.mp4", "number_of_loops": 3},
     },
     {
+        "name": "Endless Loop",
+        "operation_id": "endlessLoop",
+        "method": "POST",
+        "path": "/api/endless_loop",
+        "summary": "Loop a video to an exact target duration.",
+        "description": "Repeats one video until the requested duration in seconds is reached. The final loop is trimmed when the target duration is not an exact multiple of the source video length. Optional watermark overlay is supported.",
+        "content_type": "application/json or form data",
+        "parameters": [
+            {"name": "video_url", "type": "string", "required": True, "description": "Video URL to loop."},
+            {"name": "duration", "type": "number", "required": True, "description": "Target output duration in seconds. Must be a positive number; fractional seconds are supported."},
+            {"name": "watermark_url", "type": "string", "required": False, "description": "Optional watermark image URL."},
+        ],
+        "example": {"video_url": "https://example.com/clip.mp4", "duration": 1205},
+    },
+    {
         "name": "Picture in Picture",
         "operation_id": "pictureInPicture",
         "method": "POST",
@@ -725,6 +740,16 @@ def _success_example(endpoint):
         example = _file_output_example(endpoint)
         example["trimmed_length"] = 30
         return example
+    if operation_id == "endlessLoop":
+        example = _file_output_example(endpoint)
+        example.update({
+            "loops_required": 11,
+            "video_duration_seconds": 120,
+            "target_duration_seconds": 1205,
+            "estimated_full_loops": 10,
+            "partial_final_loop_seconds": 5,
+        })
+        return example
     if operation_id == "compressVideo":
         return {
             "success": True,
@@ -812,6 +837,8 @@ def _schema_for_param(param):
         schema.update({"minimum": 1, "maximum": 3600})
     if name == "number_of_loops":
         schema["minimum"] = 1
+    if name == "duration":
+        schema["exclusiveMinimum"] = 0
     if name in {"transition_duration"}:
         schema.update({"minimum": 0.1, "maximum": 5})
     if name in {"similarity"}:
@@ -886,6 +913,8 @@ def _response_schema_name(endpoint):
         return "TextOverlayCaptionResponse"
     if operation_id == "trimAudio":
         return "TrimAudioResponse"
+    if operation_id == "endlessLoop":
+        return "EndlessLoopResponse"
     if operation_id == "compressVideo":
         return "CompressVideoResponse"
     return "FileOutputResponse"
@@ -1053,6 +1082,22 @@ def _schema_components():
                 "download_url": url,
                 "filename": filename,
                 "trimmed_length": {"type": "number"},
+            },
+            "additionalProperties": True,
+        },
+        "EndlessLoopResponse": {
+            "type": "object",
+            "required": ["success", "download_url", "filename", "loops_required", "target_duration_seconds"],
+            "properties": {
+                "success": {"type": "boolean", "const": True},
+                "message": {"type": "string"},
+                "download_url": url,
+                "filename": filename,
+                "loops_required": {"type": "integer"},
+                "video_duration_seconds": {"type": "number"},
+                "target_duration_seconds": {"type": "number"},
+                "estimated_full_loops": {"type": "integer"},
+                "partial_final_loop_seconds": {"type": "number"},
             },
             "additionalProperties": True,
         },
