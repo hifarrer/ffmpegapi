@@ -401,23 +401,23 @@ ENDPOINTS = [
         "method": "POST",
         "path": "/api/compress_video",
         "summary": "Compress a video to a smaller H.264/AAC MP4.",
-        "description": "Downloads a video and compresses it to MP4 using quality-first CRF settings by default. Optional max dimensions avoid upscaling and optional target_size_mb uses best-effort bitrate compression for upload limits.",
+        "description": "Downloads a video and compresses it to MP4 using quality-first CRF settings by default. Optional max dimensions avoid upscaling and optional target_size_mb uses best-effort bitrate compression for upload limits. Use async=true for large videos; hosted defaults reject inputs over 500 MB and automatically queue known inputs over 100 MB for background processing.",
         "content_type": "application/json or form data",
         "parameters": [
-            {"name": "video_url", "type": "string", "required": True, "description": "Video URL to compress."},
+            {"name": "video_url", "type": "string", "required": True, "description": "Video URL to compress. Hosted default maximum input size is 500 MB."},
             {"name": "crf", "type": "integer", "required": False, "description": "Quality value from 18 to 35. Lower means higher quality and larger files.", "default": 28},
             {"name": "preset", "type": "string", "required": False, "description": "H.264 encoding preset: ultrafast, superfast, veryfast, faster, fast, medium, slow, or slower.", "default": "medium"},
             {"name": "max_width", "type": "integer", "required": False, "description": "Optional maximum output width from 144 to 3840 pixels. The video is not upscaled."},
             {"name": "max_height", "type": "integer", "required": False, "description": "Optional maximum output height from 144 to 2160 pixels. The video is not upscaled."},
             {"name": "audio_bitrate", "type": "string", "required": False, "description": "AAC audio bitrate: 64k, 96k, 128k, 192k, 256k, or 320k.", "default": "128k"},
             {"name": "target_size_mb", "type": "number", "required": False, "description": "Optional target output size in MiB. When present, the API uses best-effort bitrate compression instead of CRF."},
-            {"name": "async", "type": "boolean", "required": False, "description": "Return a job_id immediately and process in the background."},
+            {"name": "async", "type": "boolean", "required": False, "description": "Return a job_id immediately and process in the background. Recommended for compression jobs and large videos."},
         ],
         "request_schema": {
             "type": "object",
             "required": ["video_url"],
             "properties": {
-                "video_url": {"type": "string", "format": "uri", "description": "Video URL to compress."},
+                "video_url": {"type": "string", "format": "uri", "description": "Video URL to compress. Hosted default maximum input size is 500 MB."},
                 "crf": {"type": "integer", "minimum": 18, "maximum": 35, "default": 28, "description": "Quality value. Lower means higher quality and larger files."},
                 "preset": {
                     "type": "string",
@@ -434,7 +434,7 @@ ENDPOINTS = [
                     "description": "AAC audio bitrate.",
                 },
                 "target_size_mb": {"type": "number", "minimum": 1, "description": "Optional target output size in MiB."},
-                "async": {"type": "boolean", "description": "Return a job_id immediately and process in the background."},
+                "async": {"type": "boolean", "description": "Return a job_id immediately and process in the background. Recommended for compression jobs and large videos."},
             },
         },
         "example": {
@@ -443,6 +443,7 @@ ENDPOINTS = [
             "preset": "medium",
             "max_width": 1280,
             "audio_bitrate": "128k",
+            "async": True,
         },
     },
     {

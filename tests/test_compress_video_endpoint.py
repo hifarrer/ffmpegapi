@@ -91,7 +91,8 @@ class CompressVideoEndpointTests(unittest.TestCase):
     def test_sync_success_returns_compression_metrics(self):
         captured = {}
 
-        def fake_download(_url, output_path, _file_type):
+        def fake_download(_url, output_path, _file_type, max_bytes=None):
+            captured["max_bytes"] = max_bytes
             with open(output_path, "wb") as handle:
                 handle.write(b"0" * 1000)
             return True, "downloaded"
@@ -102,7 +103,8 @@ class CompressVideoEndpointTests(unittest.TestCase):
                 handle.write(b"1" * 400)
             return True, "Video compressed successfully", "crf"
 
-        with patch("main.download_file_from_url", side_effect=fake_download), \
+        with patch("main.get_remote_file_size_bytes", return_value=(None, None)), \
+             patch("main.download_file_from_url", side_effect=fake_download), \
              patch("main.compress_video_with_ffmpeg", side_effect=fake_compress), \
              patch("main.upload_to_storage", return_value="https://cdn.example/compressed.mp4"):
             response = self.post_json({
@@ -125,14 +127,16 @@ class CompressVideoEndpointTests(unittest.TestCase):
         self.assertEqual(captured["preset"], "fast")
         self.assertEqual(captured["max_width"], 1280)
         self.assertEqual(captured["audio_bitrate"], "96k")
+        self.assertIsNotNone(captured["max_bytes"])
 
     def test_impossible_target_size_returns_400(self):
-        def fake_download(_url, output_path, _file_type):
+        def fake_download(_url, output_path, _file_type, max_bytes=None):
             with open(output_path, "wb") as handle:
                 handle.write(b"0" * 1000)
             return True, "downloaded"
 
-        with patch("main.download_file_from_url", side_effect=fake_download), \
+        with patch("main.get_remote_file_size_bytes", return_value=(None, None)), \
+             patch("main.download_file_from_url", side_effect=fake_download), \
              patch(
                  "main.compress_video_with_ffmpeg",
                  return_value=(False, "target_size_mb is too small for the source duration and selected audio_bitrate", None),
@@ -144,6 +148,67 @@ class CompressVideoEndpointTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("target_size_mb is too small", response.get_json()["error"])
+
+    def test_preflight_oversize_video_returns_413(self):
+        detected_size = 501 * 1024 * 1024
+
+        with patch("main.get_remote_file_size_bytes", return_value=(detected_size, None)), \
+             patch("main.COMPRESS_VIDEO_MAX_INPUT_BYTES", 500 * 1024 * 1024), \
+             patch("main.COMPRESS_VIDEO_MAX_INPUT_MB", 500), \
+             patch("main.process_compress_video_payload") as process_payload:
+            response = self.post_json({"video_url": "https://example.com/video.mp4"})
+
+        payload = response.get_json()
+        self.assertEqual(response.status_code, 413)
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["detected_size_bytes"], detected_size)
+        self.assertIn("maximum supported size", payload["error"])
+        process_payload.assert_not_called()
+
+    def test_streamed_oversize_download_returns_413(self):
+        with patch("main.get_remote_file_size_bytes", return_value=(None, None)), \
+             patch("main.download_file_from_url", return_value=(False, "Video exceeds maximum supported size of 500 MB")), \
+             patch("main.compress_video_with_ffmpeg") as compress:
+            response = self.post_json({"video_url": "https://example.com/video.mp4"})
+
+        self.assertEqual(response.status_code, 413)
+        self.assertIn("maximum supported size", response.get_json()["error"])
+        compress.assert_not_called()
+
+    def test_large_sync_request_auto_creates_async_job(self):
+        started = {"value": False}
+        detected_size = 101 * 1024 * 1024
+
+        class FakeThread:
+            def __init__(self, target, args):
+                self.target = target
+                self.args = args
+                self.daemon = False
+
+            def start(self):
+                started["value"] = True
+
+        with patch("main.get_remote_file_size_bytes", return_value=(detected_size, None)), \
+             patch("main.COMPRESS_VIDEO_MAX_INPUT_BYTES", 500 * 1024 * 1024), \
+             patch("main.COMPRESS_VIDEO_SYNC_MAX_BYTES", 100 * 1024 * 1024), \
+             patch("main.threading.Thread", FakeThread):
+            response = self.post_json({
+                "video_url": "https://example.com/video.mp4",
+                "crf": 28,
+            })
+
+        payload = response.get_json()
+        self.assertEqual(response.status_code, 202)
+        self.assertTrue(payload["success"])
+        self.assertTrue(started["value"])
+        self.assertEqual(payload["detected_size_bytes"], detected_size)
+        self.assertIn("synchronous compression limit", payload["message"])
+
+        with app.app_context():
+            job = Job.query.filter_by(job_id=payload["job_id"]).first()
+            self.assertIsNotNone(job)
+            self.assertEqual(job.job_type, "compress_video")
+            self.assertTrue(json.loads(job.input_data)["async"])
 
     def test_async_request_creates_job(self):
         started = {"value": False}
@@ -157,7 +222,8 @@ class CompressVideoEndpointTests(unittest.TestCase):
             def start(self):
                 started["value"] = True
 
-        with patch("main.threading.Thread", FakeThread):
+        with patch("main.get_remote_file_size_bytes", return_value=(None, None)), \
+             patch("main.threading.Thread", FakeThread):
             response = self.post_json({
                 "video_url": "https://example.com/video.mp4",
                 "crf": 28,

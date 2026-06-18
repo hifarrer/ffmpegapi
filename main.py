@@ -760,13 +760,20 @@ def validate_url(url):
     except Exception as e:
         return False, f"Invalid URL format: {str(e)}"
 
-def download_with_timeout(url, output_path, timeout=60, file_type="file"):
+def _format_byte_limit(max_bytes):
+    mb = max_bytes / (1024 * 1024)
+    return f"{mb:.0f} MB" if mb.is_integer() else f"{mb:.1f} MB"
+
+
+def download_with_timeout(url, output_path, timeout=60, file_type="file", max_bytes=None):
     """Download file from URL with timeout and proper error handling"""
     # Fast-path for files already produced by this app (e.g. /download/<file> URLs).
     # This avoids round-tripping over HTTPS to ourselves and hitting socket read timeouts.
     resolved_local, local_path = resolve_local_download_url(url)
     if resolved_local and local_path:
         try:
+            if max_bytes is not None and os.path.getsize(local_path) > max_bytes:
+                return False, f"{file_type.capitalize()} exceeds maximum supported size of {_format_byte_limit(max_bytes)}"
             shutil.copy2(local_path, output_path)
             logging.info(f"Copied local {file_type} from {local_path} to {output_path}")
             return True, f"{file_type.capitalize()} copied from local storage"
@@ -789,10 +796,20 @@ def download_with_timeout(url, output_path, timeout=60, file_type="file"):
             response.raise_for_status()
             
             # Download in chunks to handle large files
+            bytes_written = 0
+            exceeded_limit = False
             with open(output_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     if chunk:
+                        bytes_written += len(chunk)
+                        if max_bytes is not None and bytes_written > max_bytes:
+                            exceeded_limit = True
+                            break
                         f.write(chunk)
+
+            if exceeded_limit:
+                cleanup_file(output_path)
+                return False, f"{file_type.capitalize()} exceeds maximum supported size of {_format_byte_limit(max_bytes)}"
             
             logging.info(f"Successfully downloaded {file_type} to {output_path}")
             return True, f"{file_type.capitalize()} downloaded successfully"
@@ -818,9 +835,9 @@ def download_video_from_url(url, output_path):
     """Download video from URL to local path"""
     return download_with_timeout(url, output_path, timeout=120, file_type="video")
 
-def download_file_from_url(url, output_path, file_type="file"):
+def download_file_from_url(url, output_path, file_type="file", max_bytes=None):
     """Download any file from URL to local path"""
-    return download_with_timeout(url, output_path, timeout=180, file_type=file_type)
+    return download_with_timeout(url, output_path, timeout=180, file_type=file_type, max_bytes=max_bytes)
 
 
 def resolve_local_download_url(url):
@@ -7623,6 +7640,102 @@ COMPRESS_VIDEO_PRESETS = {
 COMPRESS_VIDEO_AUDIO_BITRATES = {'64k', '96k', '128k', '192k', '256k', '320k'}
 
 
+def _env_positive_float(name, default):
+    raw_value = os.environ.get(name)
+    if raw_value is None or not str(raw_value).strip():
+        return default
+    try:
+        parsed = float(raw_value)
+    except (TypeError, ValueError):
+        logging.warning(f"Invalid {name} value {raw_value!r}; using default {default}")
+        return default
+    if parsed <= 0:
+        logging.warning(f"Invalid {name} value {raw_value!r}; using default {default}")
+        return default
+    return parsed
+
+
+def _mb_to_bytes(megabytes):
+    return int(megabytes * 1024 * 1024)
+
+
+COMPRESS_VIDEO_MAX_INPUT_MB = _env_positive_float('COMPRESS_VIDEO_MAX_INPUT_MB', 500)
+COMPRESS_VIDEO_SYNC_MAX_MB = min(
+    _env_positive_float('COMPRESS_VIDEO_SYNC_MAX_MB', 100),
+    COMPRESS_VIDEO_MAX_INPUT_MB,
+)
+COMPRESS_VIDEO_MAX_INPUT_BYTES = _mb_to_bytes(COMPRESS_VIDEO_MAX_INPUT_MB)
+COMPRESS_VIDEO_SYNC_MAX_BYTES = _mb_to_bytes(COMPRESS_VIDEO_SYNC_MAX_MB)
+
+
+def _parse_content_length(headers):
+    raw_length = headers.get('Content-Length') or headers.get('content-length')
+    if not raw_length:
+        return None
+    try:
+        parsed = int(raw_length)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _parse_content_range_total(headers):
+    raw_range = headers.get('Content-Range') or headers.get('content-range')
+    if not raw_range:
+        return None
+    match = re.search(r'/(\d+)\s*$', raw_range)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def get_remote_file_size_bytes(url):
+    """Best-effort remote size preflight. Returns (size_bytes, validation_error)."""
+    is_valid, validation_msg = validate_url(url)
+    if not is_valid:
+        return None, validation_msg
+
+    headers = {'User-Agent': 'ffmpegapi.net/1.0'}
+
+    try:
+        response = requests.head(url, timeout=(5, 10), allow_redirects=True, headers=headers)
+        if response.status_code < 400:
+            content_length = _parse_content_length(response.headers)
+            if content_length is not None:
+                return content_length, None
+    except requests.exceptions.RequestException as e:
+        logging.info(f"Could not preflight remote size with HEAD for {url}: {str(e)}")
+
+    try:
+        range_headers = {**headers, 'Range': 'bytes=0-0'}
+        response = requests.get(url, timeout=(5, 10), allow_redirects=True, stream=True, headers=range_headers)
+        try:
+            if response.status_code == 206:
+                content_range_total = _parse_content_range_total(response.headers)
+                if content_range_total is not None:
+                    return content_range_total, None
+            elif response.status_code == 200:
+                content_length = _parse_content_length(response.headers)
+                if content_length is not None:
+                    return content_length, None
+        finally:
+            response.close()
+    except requests.exceptions.RequestException as e:
+        logging.info(f"Could not preflight remote size with range request for {url}: {str(e)}")
+
+    return None, None
+
+
+def _compress_video_size_error(size_bytes):
+    return (
+        f"Video exceeds maximum supported size of {_format_byte_limit(COMPRESS_VIDEO_MAX_INPUT_BYTES)}. "
+        "Use a smaller source video or trim/split it before compression."
+    )
+
+
 def _parse_optional_int_range(value, name, default, min_value, max_value):
     if value is None or (isinstance(value, str) and not value.strip()):
         return default, None
@@ -7821,7 +7934,12 @@ def process_compress_video_payload(input_data):
     output_path = os.path.join(OUTPUT_FOLDER, output_filename)
 
     try:
-        success, message = download_file_from_url(video_url, video_path, "video")
+        success, message = download_file_from_url(
+            video_url,
+            video_path,
+            "video",
+            max_bytes=COMPRESS_VIDEO_MAX_INPUT_BYTES,
+        )
         if not success:
             return {'success': False, 'error': message}
 
@@ -7876,6 +7994,39 @@ def process_compress_video_job(job, input_data):
     return process_compress_video_payload(input_data)
 
 
+def _submit_compress_video_job(validated, api_key, message=None, detected_size_bytes=None):
+    user_id = getattr(request, 'api_user_id', None)
+    if not user_id:
+        key_record = ApiKey.query.filter_by(key=api_key, is_active=True).first()
+        user_id = key_record.user_id if key_record else None
+    if not user_id:
+        return jsonify({'success': False, 'error': 'Invalid or inactive API key.'}), 401
+
+    job = Job(
+        user_id=user_id,
+        job_type='compress_video',
+        status='pending',
+        input_data=json.dumps(validated),
+    )
+    db.session.add(job)
+    db.session.commit()
+
+    thread = threading.Thread(target=process_job_async, args=(job.job_id,))
+    thread.daemon = True
+    thread.start()
+
+    response_payload = {
+        'success': True,
+        'job_id': job.job_id,
+        'status': 'pending',
+        'message': message or 'Job submitted for async processing. Use /api/job/{job_id}/status to check progress.',
+        'status_url': url_for('get_job_status', job_id=job.job_id, _external=True),
+    }
+    if detected_size_bytes is not None:
+        response_payload['detected_size_bytes'] = detected_size_bytes
+    return jsonify(response_payload), 202
+
+
 @app.route('/api/compress_video', methods=['POST'])
 @log_api_request
 @require_api_key
@@ -7890,39 +8041,39 @@ def compress_video():
         if error:
             return jsonify({'success': False, 'error': error}), 400
 
-        if validated.get('async'):
-            user_id = getattr(request, 'api_user_id', None)
-            if not user_id:
-                key_record = ApiKey.query.filter_by(key=api_key, is_active=True).first()
-                user_id = key_record.user_id if key_record else None
-            if not user_id:
-                return jsonify({'success': False, 'error': 'Invalid or inactive API key.'}), 401
+        detected_size_bytes, preflight_error = get_remote_file_size_bytes(validated['video_url'])
+        if preflight_error:
+            return jsonify({'success': False, 'error': preflight_error}), 400
 
-            job = Job(
-                user_id=user_id,
-                job_type='compress_video',
-                status='pending',
-                input_data=json.dumps(validated),
-            )
-            db.session.add(job)
-            db.session.commit()
-
-            thread = threading.Thread(target=process_job_async, args=(job.job_id,))
-            thread.daemon = True
-            thread.start()
-
+        if detected_size_bytes is not None and detected_size_bytes > COMPRESS_VIDEO_MAX_INPUT_BYTES:
             return jsonify({
-                'success': True,
-                'job_id': job.job_id,
-                'status': 'pending',
-                'message': 'Job submitted for async processing. Use /api/job/{job_id}/status to check progress.',
-                'status_url': url_for('get_job_status', job_id=job.job_id, _external=True),
-            }), 202
+                'success': False,
+                'error': _compress_video_size_error(detected_size_bytes),
+                'detected_size_bytes': detected_size_bytes,
+                'max_size_mb': COMPRESS_VIDEO_MAX_INPUT_MB,
+            }), 413
+
+        if validated.get('async'):
+            return _submit_compress_video_job(validated, api_key, detected_size_bytes=detected_size_bytes)
+
+        if detected_size_bytes is not None and detected_size_bytes > COMPRESS_VIDEO_SYNC_MAX_BYTES:
+            validated['async'] = True
+            return _submit_compress_video_job(
+                validated,
+                api_key,
+                message=(
+                    "Video is larger than the synchronous compression limit, so it was submitted "
+                    "for async processing. Use /api/job/{job_id}/status to check progress."
+                ),
+                detected_size_bytes=detected_size_bytes,
+            )
 
         result = process_compress_video_payload(validated)
         if result.get('success'):
             return jsonify(result)
         error_message = result.get('error', 'Video compression failed')
+        if error_message.startswith('Video exceeds maximum supported size'):
+            return jsonify(result), 413
         client_error_prefixes = (
             'video_url is required',
             'target_size_mb is too small',
@@ -7933,6 +8084,7 @@ def compress_video():
             'Connection error',
             'HTTP error',
             'Failed to download',
+            'Video exceeds maximum supported size',
         )
         status_code = 400 if error_message.startswith(client_error_prefixes) else 500
         return jsonify(result), status_code

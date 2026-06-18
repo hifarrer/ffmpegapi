@@ -3221,7 +3221,7 @@ if ($result['success']) {
                                 <code class="text-muted">/api/compress_video</code>
                             </div>
                             <div class="card-body">
-                                <p>Compress a video into an H.264/AAC MP4. By default, this endpoint uses quality-first CRF compression. If <code>target_size_mb</code> is provided, it switches to best-effort bitrate compression for upload-size limits.</p>
+                                <p>Compress a video into an H.264/AAC MP4. By default, this endpoint uses quality-first CRF compression. If <code>target_size_mb</code> is provided, it switches to best-effort bitrate compression for upload-size limits. Hosted requests accept source videos up to <code>500 MB</code>; known videos over <code>100 MB</code> are automatically queued for background processing.</p>
 
                                 <h6>Request Format</h6>
                                 <p><strong>Content-Type:</strong> <code>application/json</code> (form fields are also accepted)</p>
@@ -3242,7 +3242,7 @@ if ($result['success']) {
                                                 <td><code>video_url</code></td>
                                                 <td>String</td>
                                                 <td>Yes</td>
-                                                <td>URL of the source video to compress</td>
+                                                <td>URL of the source video to compress. Hosted default maximum input size: <code>500 MB</code>.</td>
                                             </tr>
                                             <tr>
                                                 <td><code>crf</code></td>
@@ -3284,7 +3284,7 @@ if ($result['success']) {
                                                 <td><code>async</code></td>
                                                 <td>Boolean</td>
                                                 <td>No</td>
-                                                <td>Set to <code>true</code> to return a job immediately and process in the background.</td>
+                                                <td>Set to <code>true</code> to return a job immediately and process in the background. Recommended for compression jobs and large videos.</td>
                                             </tr>
                                         </tbody>
                                     </table>
@@ -3300,7 +3300,8 @@ if ($result['success']) {
     "crf": 28,
     "preset": "medium",
     "max_width": 1280,
-    "audio_bitrate": "128k"
+    "audio_bitrate": "128k",
+    "async": true
   }'</code></pre>
                                 </div>
 
@@ -3337,9 +3338,19 @@ if ($result['success']) {
 }</code></pre>
                                 </div>
 
+                                <h6>Size Limit Response</h6>
+                                <div class="code-block p-3">
+                                    <pre><code class="language-json">{
+  "success": false,
+  "error": "Video exceeds maximum supported size of 500 MB. Use a smaller source video or trim/split it before compression.",
+  "detected_size_bytes": 629145600,
+  "max_size_mb": 500
+}</code></pre>
+                                </div>
+
                                 <div class="alert alert-info mt-3">
                                     <i class="fas fa-info-circle me-2"></i>
-                                    <strong>Tip:</strong> Use CRF mode for predictable quality. Use <code>target_size_mb</code> only when you must fit a strict upload limit.
+                                    <strong>Tip:</strong> Use CRF mode for predictable quality and set <code>async</code> to <code>true</code> for compression jobs from browsers or serverless clients. Use <code>target_size_mb</code> only when you must fit a strict upload limit.
                                 </div>
                             </div>
                         </div>

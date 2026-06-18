@@ -733,6 +733,103 @@
                         </div>
                     </div>
 
+                    <!-- Endless Loop Accordion Item -->
+                    <div class="accordion-item">
+                        <h2 class="accordion-header" id="endlessLoopHeading">
+                            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" 
+                                    data-bs-target="#endlessLoopCollapse" aria-expanded="false" aria-controls="endlessLoopCollapse">
+                                <i class="fas fa-infinity me-2"></i>
+                                Endless Loop to Duration
+                            </button>
+                        </h2>
+                        <div id="endlessLoopCollapse" class="accordion-collapse collapse" 
+                             aria-labelledby="endlessLoopHeading" data-bs-parent="#videoProcessingAccordion">
+                            <div class="accordion-body">
+                                <form id="endlessLoopForm">
+                                    <div class="mb-4">
+                                        <label for="endlessLoopVideoUrl" class="form-label">
+                                            <i class="fas fa-video me-2"></i>
+                                            Video URL
+                                        </label>
+                                        <input type="url" class="form-control" id="endlessLoopVideoUrl" name="video_url"
+                                               placeholder="https://example.com/clip.mp4" required>
+                                        <div class="form-text">This video will be repeated until the requested duration is reached.</div>
+                                    </div>
+
+                                    <div class="mb-4">
+                                        <label for="endlessLoopDuration" class="form-label">
+                                            <i class="fas fa-clock me-2"></i>
+                                            Duration in Seconds
+                                        </label>
+                                        <input type="number" class="form-control" id="endlessLoopDuration" name="duration" min="0.001" step="0.001"
+                                               placeholder="e.g. 1205" required>
+                                        <div class="form-text">The final repetition is trimmed when the target duration is not an exact multiple of the source video length.</div>
+                                    </div>
+
+                                    <div class="mb-4">
+                                        <label for="endlessLoopWatermarkUrl" class="form-label">
+                                            <i class="fas fa-image me-2"></i>
+                                            Optional Watermark URL
+                                        </label>
+                                        <input type="url" class="form-control" id="endlessLoopWatermarkUrl" name="watermark_url"
+                                               placeholder="https://example.com/logo.png">
+                                        <div class="form-text">Logo image URL to add in the bottom-right corner of the video (e.g. PNG, JPG).</div>
+                                    </div>
+
+                                    <div class="d-grid">
+                                        <button type="submit" class="btn btn-primary btn-lg" id="endlessLoopSubmitBtn">
+                                            <i class="fas fa-play me-2"></i>
+                                            Create Endless Loop
+                                        </button>
+                                    </div>
+                                </form>
+
+                                <!-- Progress Bar -->
+                                <div id="endlessLoopProgressContainer" class="mt-4" style="display: none;">
+                                    <div class="d-flex align-items-center mb-2">
+                                        <div class="spinner-border spinner-border-sm me-2" role="status">
+                                            <span class="visually-hidden">Loading...</span>
+                                        </div>
+                                        <span>Processing your endless loop video...</span>
+                                    </div>
+                                    <div class="progress">
+                                        <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                                             role="progressbar" style="width: 100%"></div>
+                                    </div>
+                                </div>
+
+                                <!-- Alert Messages -->
+                                <div id="endlessLoopAlertContainer" class="mt-4"></div>
+
+                                <!-- Results -->
+                                <div id="endlessLoopResultContainer" class="mt-4" style="display: none;">
+                                    <div class="card">
+                                        <div class="card-header">
+                                            <h5 class="card-title mb-0">
+                                                <i class="fas fa-check-circle text-success me-2"></i>
+                                                Endless Loop Created Successfully
+                                            </h5>
+                                        </div>
+                                        <div class="card-body">
+                                            <p class="card-text">Your endless loop video has been generated and is ready for download.</p>
+                                            <div class="d-flex gap-2 flex-wrap">
+                                                <a id="endlessLoopDownloadBtn" href="#" class="btn btn-success" download>
+                                                    <i class="fas fa-download me-2"></i>
+                                                    Download Video
+                                                </a>
+                                                <button id="endlessLoopResetBtn" class="btn btn-outline-primary">
+                                                    <i class="fas fa-plus me-2"></i>
+                                                    Create Another Endless Loop
+                                                </button>
+                                            </div>
+                                            <p class="small text-muted mt-3" id="endlessLoopDetails"></p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Picture-in-Picture Accordion Item -->
                     <div class="accordion-item">
                         <h2 class="accordion-header" id="pipHeading">

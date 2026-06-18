@@ -5,6 +5,7 @@ class VideoMerger {
         this.initializeImageAudioTab();
         this.initializeVideosTab();
         this.initializeVideoLoopTab();
+        this.initializeEndlessLoopTab();
         this.initializePipTab();
         this.initializeWatermarkTab();
         this.initializeSubtitlesTab();
@@ -116,6 +117,31 @@ class VideoMerger {
 
         this.videoLoopResetBtn.addEventListener('click', () => {
             this.resetVideoLoopForm();
+        });
+    }
+
+    initializeEndlessLoopTab() {
+        this.endlessLoopForm = document.getElementById('endlessLoopForm');
+        if (!this.endlessLoopForm) {
+            return;
+        }
+
+        this.endlessLoopSubmitBtn = document.getElementById('endlessLoopSubmitBtn');
+        this.endlessLoopProgressContainer = document.getElementById('endlessLoopProgressContainer');
+        this.endlessLoopAlertContainer = document.getElementById('endlessLoopAlertContainer');
+        this.endlessLoopResultContainer = document.getElementById('endlessLoopResultContainer');
+        this.endlessLoopDownloadBtn = document.getElementById('endlessLoopDownloadBtn');
+        this.endlessLoopResetBtn = document.getElementById('endlessLoopResetBtn');
+        this.endlessLoopDetails = document.getElementById('endlessLoopDetails');
+        this.endlessLoopFilename = null;
+
+        this.endlessLoopForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            this.handleEndlessLoopSubmit();
+        });
+
+        this.endlessLoopResetBtn.addEventListener('click', () => {
+            this.resetEndlessLoopForm();
         });
     }
 
@@ -413,6 +439,76 @@ class VideoMerger {
         }
     }
 
+    async handleEndlessLoopSubmit() {
+        const videoUrlInput = document.getElementById('endlessLoopVideoUrl');
+        const durationInput = document.getElementById('endlessLoopDuration');
+        const watermarkUrlInput = document.getElementById('endlessLoopWatermarkUrl');
+
+        const video_url = videoUrlInput.value.trim();
+        const duration_raw = durationInput.value.trim();
+        const watermark_url = watermarkUrlInput ? watermarkUrlInput.value.trim() : '';
+
+        if (!video_url) {
+            this.showEndlessLoopAlert('danger', 'Video URL is required.');
+            return;
+        }
+
+        const duration = parseFloat(duration_raw);
+        if (!Number.isFinite(duration) || duration <= 0) {
+            this.showEndlessLoopAlert('danger', 'Duration must be a positive number of seconds.');
+            return;
+        }
+
+        const payload = { video_url, duration };
+        if (watermark_url) {
+            payload.watermark_url = watermark_url;
+        }
+
+        this.showEndlessLoopProgress();
+        this.hideEndlessLoopAlert();
+        this.hideEndlessLoopResult();
+
+        try {
+            const response = await fetch('/api/endless_loop', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-API-Key': window.API_KEY
+                },
+                body: JSON.stringify(payload)
+            });
+
+            const result = await response.json();
+
+            if (result.success) {
+                this.endlessLoopFilename = result.filename;
+                this.endlessLoopDownloadBtn.href = result.download_url;
+                this.endlessLoopDownloadBtn.download = result.filename;
+
+                const parts = [];
+                if (typeof result.loops_required === 'number') parts.push(`Loops required: ${result.loops_required}`);
+                if (typeof result.video_duration_seconds === 'number') parts.push(`Source duration: ${result.video_duration_seconds.toFixed(2)}s`);
+                if (typeof result.target_duration_seconds === 'number') parts.push(`Target duration: ${result.target_duration_seconds.toFixed(2)}s`);
+                if (typeof result.estimated_full_loops === 'number') parts.push(`Full loops: ${result.estimated_full_loops}`);
+                if (typeof result.partial_final_loop_seconds === 'number') parts.push(`Final trimmed loop: ${result.partial_final_loop_seconds.toFixed(2)}s`);
+
+                if (this.endlessLoopDetails) {
+                    this.endlessLoopDetails.textContent = parts.join(' | ');
+                }
+
+                this.showEndlessLoopResult();
+                this.showEndlessLoopAlert('success', 'Endless loop video created successfully.');
+            } else {
+                this.showEndlessLoopAlert('danger', `Error: ${result.error}`);
+            }
+        } catch (error) {
+            console.error('Endless loop error:', error);
+            this.showEndlessLoopAlert('danger', `An error occurred: ${error.message}`);
+        } finally {
+            this.hideEndlessLoopProgress();
+        }
+    }
+
     async handleVideosSubmit() {
         const videoUrls = Array.from(document.querySelectorAll('.video-url'))
             .map(input => input.value.trim())
@@ -554,6 +650,65 @@ class VideoMerger {
     hideVideoLoopResult() {
         if (this.videoLoopResultContainer) {
             this.videoLoopResultContainer.style.display = 'none';
+        }
+    }
+
+    resetEndlessLoopForm() {
+        if (!this.endlessLoopForm) return;
+        this.endlessLoopForm.reset();
+        this.hideEndlessLoopAlert();
+        this.hideEndlessLoopResult();
+        this.hideEndlessLoopProgress();
+        this.endlessLoopFilename = null;
+        if (this.endlessLoopDetails) {
+            this.endlessLoopDetails.textContent = '';
+        }
+    }
+
+    showEndlessLoopProgress() {
+        if (this.endlessLoopProgressContainer) {
+            this.endlessLoopProgressContainer.style.display = 'block';
+        }
+        if (this.endlessLoopSubmitBtn) {
+            this.endlessLoopSubmitBtn.disabled = true;
+        }
+    }
+
+    hideEndlessLoopProgress() {
+        if (this.endlessLoopProgressContainer) {
+            this.endlessLoopProgressContainer.style.display = 'none';
+        }
+        if (this.endlessLoopSubmitBtn) {
+            this.endlessLoopSubmitBtn.disabled = false;
+        }
+    }
+
+    showEndlessLoopAlert(type, message) {
+        if (!this.endlessLoopAlertContainer) return;
+        this.endlessLoopAlertContainer.innerHTML = `
+            <div class="alert alert-${type} alert-dismissible fade show" role="alert">
+                <i class="fas fa-${this.getAlertIcon(type)} me-2"></i>
+                ${message}
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+        `;
+    }
+
+    hideEndlessLoopAlert() {
+        if (this.endlessLoopAlertContainer) {
+            this.endlessLoopAlertContainer.innerHTML = '';
+        }
+    }
+
+    showEndlessLoopResult() {
+        if (this.endlessLoopResultContainer) {
+            this.endlessLoopResultContainer.style.display = 'block';
+        }
+    }
+
+    hideEndlessLoopResult() {
+        if (this.endlessLoopResultContainer) {
+            this.endlessLoopResultContainer.style.display = 'none';
         }
     }
 
@@ -2933,6 +3088,7 @@ class VideoMerger {
             crf: parseInt(document.getElementById('compressVideoCrf').value, 10) || 28,
             preset: document.getElementById('compressVideoPreset').value,
             audio_bitrate: document.getElementById('compressVideoAudioBitrate').value,
+            async: true,
         };
 
         const maxWidth = document.getElementById('compressVideoMaxWidth').value.trim();
@@ -2964,25 +3120,15 @@ class VideoMerger {
                 body: JSON.stringify(payload),
             });
 
-            const result = await response.json();
+            const result = await response.json().catch(() => ({}));
 
-            if (result.success) {
-                this.compressVideoDownloadBtn.href = result.download_url;
-                this.compressVideoDownloadBtn.download = result.filename;
-                this.compressVideoCurrentFilename = result.filename;
-
-                const originalSize = this.formatFileSize(result.original_size_bytes || 0);
-                const compressedSize = this.formatFileSize(result.compressed_size_bytes || 0);
-                const ratio = typeof result.compression_ratio === 'number'
-                    ? `${Math.round((1 - result.compression_ratio) * 100)}% smaller`
-                    : 'compression complete';
-                document.getElementById('compressVideoResultMessage').textContent =
-                    `${originalSize} to ${compressedSize} (${ratio}, ${result.compression_mode || 'crf'} mode).`;
-
-                this.showCompressVideoResult();
-                this.showCompressVideoAlert('success', result.message || 'Video compressed successfully.');
+            if (result.success && result.job_id && !result.download_url) {
+                this.setCompressVideoProgressText('Compression job submitted. Waiting for the result...');
+                await this.pollCompressVideoJob(result.job_id);
+            } else if (response.ok && result.success) {
+                this.handleCompressVideoSuccess(result);
             } else {
-                this.showCompressVideoAlert('danger', `Error: ${result.error}`);
+                this.showCompressVideoAlert('danger', `Error: ${result.error || `Request failed with status ${response.status}`}`);
             }
         } catch (error) {
             console.error('Compress video error:', error);
@@ -2990,6 +3136,60 @@ class VideoMerger {
         } finally {
             this.hideCompressVideoProgress();
         }
+    }
+
+    async pollCompressVideoJob(jobId) {
+        const maxAttempts = 360;
+        const delayMs = 5000;
+
+        for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+
+            const response = await fetch(`/api/job/${encodeURIComponent(jobId)}/status`, {
+                headers: {
+                    'X-API-Key': window.API_KEY,
+                },
+            });
+            const result = await response.json().catch(() => ({}));
+
+            if (!response.ok || !result.success) {
+                throw new Error(result.error || `Job status request failed with status ${response.status}`);
+            }
+
+            if (result.status === 'completed') {
+                this.handleCompressVideoSuccess(result);
+                return;
+            }
+
+            if (result.status === 'failed') {
+                throw new Error(result.error || 'Compression job failed.');
+            }
+
+            this.setCompressVideoProgressText(`Compression job ${result.status || 'processing'}...`);
+        }
+
+        throw new Error('Compression is still running. Check the job status endpoint for the latest result.');
+    }
+
+    handleCompressVideoSuccess(result) {
+        if (!result.download_url) {
+            throw new Error('Compression completed without a download URL.');
+        }
+
+        this.compressVideoDownloadBtn.href = result.download_url;
+        this.compressVideoDownloadBtn.download = result.filename || 'compressed-video.mp4';
+        this.compressVideoCurrentFilename = result.filename || null;
+
+        const originalSize = this.formatFileSize(result.original_size_bytes || 0);
+        const compressedSize = this.formatFileSize(result.compressed_size_bytes || 0);
+        const ratio = typeof result.compression_ratio === 'number'
+            ? `${Math.round((1 - result.compression_ratio) * 100)}% smaller`
+            : 'compression complete';
+        document.getElementById('compressVideoResultMessage').textContent =
+            `${originalSize} to ${compressedSize} (${ratio}, ${result.compression_mode || 'crf'} mode).`;
+
+        this.showCompressVideoResult();
+        this.showCompressVideoAlert('success', result.message || 'Video compressed successfully.');
     }
 
     resetCompressVideoForm() {
@@ -3003,11 +3203,21 @@ class VideoMerger {
     showCompressVideoProgress() {
         this.compressVideoProgressContainer.style.display = 'block';
         this.compressVideoSubmitBtn.disabled = true;
+        this.setCompressVideoProgressText('Compressing video...');
     }
 
     hideCompressVideoProgress() {
         this.compressVideoProgressContainer.style.display = 'none';
         this.compressVideoSubmitBtn.disabled = false;
+    }
+
+    setCompressVideoProgressText(message) {
+        const progressText = this.compressVideoProgressContainer
+            ? this.compressVideoProgressContainer.querySelector('.d-flex > span:not(.visually-hidden)')
+            : null;
+        if (progressText) {
+            progressText.textContent = message;
+        }
     }
 
     showCompressVideoAlert(type, message) {
