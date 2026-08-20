@@ -82,9 +82,21 @@ def _stripe_object_id(value):
     return str(value or '').strip()
 
 
+def _stripe_to_plain_data(value):
+    """Recursively normalize Stripe API resources without relying on dict.get()."""
+    if isinstance(value, dict):
+        return {key: _stripe_to_plain_data(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_stripe_to_plain_data(item) for item in value]
+    items_method = getattr(value, 'items', None)
+    if callable(items_method):
+        return {key: _stripe_to_plain_data(item) for key, item in items_method()}
+    return value
+
+
 def _retrieve_stripe_customer(customer_id):
     try:
-        customer = stripe.Customer.retrieve(customer_id)
+        customer = _stripe_to_plain_data(stripe.Customer.retrieve(customer_id))
     except Exception as exc:
         logging.warning('Unable to verify Stripe customer %s: %s', customer_id, exc)
         raise AdminUserEditError('Stripe could not verify that customer ID.') from exc
@@ -95,7 +107,7 @@ def _retrieve_stripe_customer(customer_id):
 
 def _retrieve_stripe_subscription(subscription_id):
     try:
-        return stripe.Subscription.retrieve(subscription_id)
+        return _stripe_to_plain_data(stripe.Subscription.retrieve(subscription_id))
     except Exception as exc:
         logging.warning('Unable to verify Stripe subscription %s: %s', subscription_id, exc)
         raise AdminUserEditError('Stripe could not verify that subscription ID.') from exc

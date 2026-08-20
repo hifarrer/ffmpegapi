@@ -3,6 +3,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import stripe as stripe_sdk
 from flask import Flask
 from flask_login import LoginManager
 
@@ -288,10 +289,17 @@ def test_subscription_link_syncs_verified_billing_state(app):
 
     client = app.test_client()
     log_in_admin(client)
-    verified_subscription = stripe_subscription(status='trialing')
+    verified_subscription = stripe_sdk.Subscription.construct_from(
+        stripe_subscription(status='trialing'),
+        'sk_test',
+    )
+    verified_customer = stripe_sdk.Customer.construct_from(
+        {'id': 'cus_verified', 'deleted': False},
+        'sk_test',
+    )
     with patch('admin_routes.get_stripe_config', return_value=object()), \
          patch('admin_routes.stripe.Subscription.retrieve', return_value=verified_subscription), \
-         patch('admin_routes.stripe.Customer.retrieve', return_value={'id': 'cus_verified'}):
+         patch('admin_routes.stripe.Customer.retrieve', return_value=verified_customer):
         response = client.post(
             f'/admin/users/{user_id}/edit',
             data=edit_payload(stripe_subscription_id='sub_verified'),
