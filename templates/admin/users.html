@@ -78,11 +78,13 @@
                             <th>API Usage</th>
                             <th>API Keys</th>
                             <th>Joined</th>
+                            <th>Last Used</th>
                             <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody>
                         {% for user in users.items %}
+                        {% set subscription = effective_subscriptions.get(user.id) %}
                         <tr>
                             <td>
                                 <span class="badge bg-secondary">{{ user.id }}</span>
@@ -90,7 +92,9 @@
                             <td>
                                 <div class="d-flex align-items-center">
                                     <i class="fas fa-user me-2 text-primary"></i>
-                                    <strong>{{ user.username }}</strong>
+                                    <a href="{{ url_for('admin.user_detail', user_id=user.id) }}" class="fw-bold text-decoration-none">
+                                        {{ user.username }}
+                                    </a>
                                 </div>
                             </td>
                             <td>
@@ -102,23 +106,29 @@
                                 {% endif %}
                             </td>
                             <td>
-                                {% if user.subscription and user.subscription.plan %}
-                                    <span class="badge {% if user.subscription.plan.name == 'Free' %}bg-secondary{% elif user.subscription.plan.name == 'Premium' %}bg-primary{% else %}bg-warning{% endif %}">
-                                        {{ user.subscription.plan.name }}
+                                {% if subscription and subscription.plan %}
+                                    <span class="badge {% if subscription.plan.name == 'Free' %}bg-secondary{% elif subscription.plan.name == 'Premium' %}bg-primary{% else %}bg-warning{% endif %}">
+                                        {{ subscription.plan.name }}
                                     </span>
+                                    {% if subscription.status == 'admin_granted' %}
+                                        <small class="text-info d-block">Admin grant</small>
+                                    {% elif subscription.stripe_subscription_id %}
+                                        <small class="text-success d-block">Stripe-backed</small>
+                                    {% endif %}
                                 {% else %}
                                     <span class="badge bg-secondary">Free</span>
+                                    <small class="text-muted d-block">No paid entitlement</small>
                                 {% endif %}
                             </td>
                             <td>
-                                {% if user.subscription and user.subscription.plan %}
+                                {% if subscription and subscription.plan %}
                                     <div class="progress" style="height: 8px; width: 80px;">
-                                        {% set usage_percent = (user.subscription.api_calls_used / user.subscription.plan.api_calls_per_month * 100) if user.subscription.plan.api_calls_per_month > 0 else 0 %}
+                                        {% set usage_percent = (subscription.api_calls_used / subscription.plan.api_calls_per_month * 100) if subscription.plan.api_calls_per_month > 0 else 0 %}
                                         <div class="progress-bar {% if usage_percent >= 90 %}bg-danger{% elif usage_percent >= 70 %}bg-warning{% else %}bg-success{% endif %}" 
                                              style="width: {{ usage_percent }}%"></div>
                                     </div>
                                     <small class="text-muted d-block">
-                                        {{ user.subscription.api_calls_used }}/{{ user.subscription.plan.api_calls_per_month }}
+                                        {{ subscription.api_calls_used }}/{{ subscription.plan.api_calls_per_month }}
                                     </small>
                                 {% else %}
                                     <span class="text-muted">-</span>
@@ -132,7 +142,14 @@
                             <td>
                                 <small class="text-muted">
                                     <i class="fas fa-calendar me-1"></i>
-                                    {{ user.created_at.strftime('%m/%d/%Y %H:%M') if user.created_at else 'Unknown' }}
+                                    {{ user.created_at.strftime('%m/%d/%Y %H:%M UTC') if user.created_at else 'Unknown' }}
+                                </small>
+                            </td>
+                            <td>
+                                {% set last_used = last_used_by_user.get(user.id) %}
+                                <small class="text-muted">
+                                    <i class="fas fa-clock me-1"></i>
+                                    {{ last_used.strftime('%m/%d/%Y %H:%M UTC') if last_used else 'Never' }}
                                 </small>
                             </td>
                             <td>
@@ -166,7 +183,7 @@
                                                 <select class="form-select" id="plan_id{{ user.id }}" name="plan_id" required>
                                                     {% for plan in plans %}
                                                         <option value="{{ plan.id }}" 
-                                                                {% if user.subscription and user.subscription.plan_id == plan.id %}selected{% endif %}>
+                                                                {% if subscription and subscription.plan_id == plan.id %}selected{% endif %}>
                                                             {{ plan.name }} 
                                                             {% if plan.api_calls_per_month > 0 %}
                                                                 ({{ plan.api_calls_per_month }} calls/month)
@@ -186,15 +203,16 @@
                                             <div class="alert alert-info">
                                                 <i class="fas fa-info-circle me-2"></i>
                                                 <strong>Current Plan:</strong> 
-                                                {% if user.subscription and user.subscription.plan %}
-                                                    {{ user.subscription.plan.name }}
+                                                {% if subscription and subscription.plan %}
+                                                    {{ subscription.plan.name }}
+                                                    {% if subscription.status == 'admin_granted' %}(admin grant){% endif %}
                                                 {% else %}
                                                     Free
                                                 {% endif %}
                                                 <br>
                                                 <strong>API Usage:</strong> 
-                                                {% if user.subscription %}
-                                                    {{ user.subscription.api_calls_used }} calls used this month
+                                                {% if subscription %}
+                                                    {{ subscription.api_calls_used }} calls used this month
                                                 {% else %}
                                                     No usage data
                                                 {% endif %}
@@ -202,7 +220,7 @@
                                             
                                             <div class="alert alert-warning">
                                                 <i class="fas fa-exclamation-triangle me-2"></i>
-                                                Changing the plan will reset the user's API usage counter to 0.
+                                                Selecting a paid plan here creates an explicit admin grant; it does not create or charge a Stripe subscription. Changing the plan resets API usage to 0.
                                             </div>
                                         </div>
                                         <div class="modal-footer">

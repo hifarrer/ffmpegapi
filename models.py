@@ -156,6 +156,9 @@ class StripeSettings(db.Model):
 
 class UserSubscription(db.Model):
     __tablename__ = 'user_subscriptions'
+    __table_args__ = (
+        db.UniqueConstraint('user_id', name='uq_user_subscriptions_user_id'),
+    )
     
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
@@ -182,9 +185,18 @@ class UserSubscription(db.Model):
     
     def can_make_api_call(self):
         """Check if user can make an API call based on their plan"""
-        if self.status != 'active':
+        if not self.has_entitlement_source():
             return False
         return self.api_calls_used < self.plan.api_calls_per_month
+
+    def has_entitlement_source(self):
+        """Require paid access to be backed by Stripe or an explicit admin grant."""
+        if self.status not in ('active', 'trialing', 'admin_granted') or not self.plan:
+            return False
+        is_paid = float(self.plan.monthly_price or 0) > 0 or float(self.plan.yearly_price or 0) > 0
+        if not is_paid:
+            return True
+        return self.status == 'admin_granted' or bool(self.stripe_subscription_id)
     
     def increment_api_usage(self):
         """Increment API call usage"""

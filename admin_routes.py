@@ -1,5 +1,6 @@
-from flask import Blueprint, render_template, request, redirect, url_for, flash, session, jsonify
+from flask import Blueprint, render_template, request, redirect, url_for, flash, session, jsonify, abort, current_app
 from flask_login import login_required, current_user
+from flask_wtf.csrf import generate_csrf, validate_csrf
 from werkzeug.security import check_password_hash, generate_password_hash
 from functools import wraps
 import logging
@@ -8,6 +9,51 @@ from models import User, ApiKey, SubscriptionPlan, StripeSettings, UserSubscript
 import os
 
 admin_bp = Blueprint('admin', __name__, url_prefix='/admin')
+
+
+@admin_bp.context_processor
+def inject_admin_csrf_token():
+    return {'admin_csrf_token': generate_csrf}
+
+
+@admin_bp.before_request
+def protect_admin_mutations():
+    """Require a CSRF token for every state-changing admin request."""
+    if request.method not in {'POST', 'PUT', 'PATCH', 'DELETE'}:
+        return None
+    if not current_app.config.get('WTF_CSRF_ENABLED', True):
+        return None
+    try:
+        validate_csrf(request.form.get('csrf_token') or request.headers.get('X-CSRFToken'))
+    except Exception:
+        abort(400, description='Invalid or missing CSRF token')
+    return None
+
+
+def _is_paid_plan(plan):
+    return float(plan.monthly_price or 0) > 0 or float(plan.yearly_price or 0) > 0
+
+
+def _subscription_sort_key(subscription):
+    return (subscription.updated_at or subscription.created_at or datetime.min, subscription.id or 0)
+
+
+def _effective_subscription_for_user(user_id):
+    subscriptions = UserSubscription.query.filter_by(user_id=user_id).all()
+    entitled = [
+        subscription for subscription in subscriptions
+        if (
+            subscription.status == 'admin_granted'
+            or (
+                subscription.status in ('active', 'trialing')
+                and (
+                    not _is_paid_plan(subscription.plan)
+                    or bool(subscription.stripe_subscription_id)
+                )
+            )
+        )
+    ]
+    return max(entitled, key=_subscription_sort_key) if entitled else None
 
 def admin_required(f):
     """Decorator to require admin authentication"""
@@ -117,15 +163,48 @@ def user_management():
             else:
                 query = query.join(UserSubscription, User.id == UserSubscription.user_id)\
                              .join(SubscriptionPlan, UserSubscription.plan_id == SubscriptionPlan.id)\
-                             .filter(SubscriptionPlan.id == int(plan_filter))
+                             .filter(SubscriptionPlan.id == int(plan_filter))\
+                             .filter(
+                                 (UserSubscription.status == 'admin_granted') |
+                                 (
+                                     UserSubscription.status.in_(('active', 'trialing')) &
+                                     (
+                                         (
+                                             (SubscriptionPlan.monthly_price == 0) &
+                                             (SubscriptionPlan.yearly_price == 0)
+                                         ) |
+                                         (
+                                             UserSubscription.stripe_subscription_id.isnot(None) &
+                                             (UserSubscription.stripe_subscription_id != '')
+                                         )
+                                     )
+                                 )
+                             )
+
+        query = query.distinct()
 
         users = query.order_by(User.created_at.desc()).paginate(
             page=page, per_page=per_page, error_out=False
         )
 
         plans = SubscriptionPlan.query.filter_by(is_active=True).order_by(SubscriptionPlan.sort_order).all()
+        effective_subscriptions = {
+            user.id: _effective_subscription_for_user(user.id)
+            for user in users.items
+        }
+        user_ids = [user.id for user in users.items]
+        last_used_by_user = {}
+        if user_ids:
+            last_used_by_user = dict(
+                db.session.query(ApiKey.user_id, db.func.max(ApiKey.last_used))
+                .filter(ApiKey.user_id.in_(user_ids))
+                .group_by(ApiKey.user_id)
+                .all()
+            )
 
         return render_template('admin/users.html', users=users, plans=plans,
+                             effective_subscriptions=effective_subscriptions,
+                             last_used_by_user=last_used_by_user,
                              username_filter=username_filter,
                              email_filter=email_filter,
                              plan_filter=plan_filter)
@@ -133,8 +212,34 @@ def user_management():
     except Exception as e:
         logging.error(f"Error loading user management: {str(e)}")
         flash('Error loading user data', 'danger')
-        return render_template('admin/users.html', users=None, plans=[],
+        return render_template('admin/users.html', users=None, plans=[], effective_subscriptions={},
+                             last_used_by_user={},
                              username_filter='', email_filter='', plan_filter='')
+
+@admin_bp.route('/users/<int:user_id>')
+@admin_required
+def user_detail(user_id):
+    """Show a user's latest authenticated API activity."""
+    user = User.query.get_or_404(user_id)
+    last_used = (
+        db.session.query(db.func.max(ApiKey.last_used))
+        .filter(ApiKey.user_id == user.id)
+        .scalar()
+    )
+    recent_logs = (
+        ApiLog.query
+        .filter(ApiLog.user_id == user.id)
+        .order_by(ApiLog.created_at.desc(), ApiLog.id.desc())
+        .limit(10)
+        .all()
+    )
+
+    return render_template(
+        'admin/user_detail.html',
+        user=user,
+        last_used=last_used,
+        recent_logs=recent_logs,
+    )
 
 @admin_bp.route('/users/<int:user_id>/toggle-status', methods=['POST'])
 @admin_required
@@ -192,15 +297,21 @@ def change_user_plan(user_id):
         
         plan = SubscriptionPlan.query.get_or_404(plan_id)
         
-        # Get or create user subscription
-        user_subscription = UserSubscription.query.filter_by(user_id=user.id).first()
-        
+        subscriptions = UserSubscription.query.filter_by(user_id=user.id).all()
+        user_subscription = max(subscriptions, key=_subscription_sort_key) if subscriptions else None
         if not user_subscription:
-            # Create new subscription
-            user_subscription = UserSubscription()
-            user_subscription.user_id = user.id
-            user_subscription.status = 'active'
+            user_subscription = UserSubscription(user_id=user.id)
             db.session.add(user_subscription)
+
+        if _is_paid_plan(plan):
+            live_stripe_rows = [
+                subscription for subscription in subscriptions
+                if subscription.stripe_subscription_id
+                and subscription.status in ('active', 'trialing')
+            ]
+            if live_stripe_rows:
+                flash('This user has a locally active Stripe subscription. Manage that plan in Stripe or downgrade it to Free first.', 'danger')
+                return redirect(url_for('admin.user_management'))
         
         # Update subscription details
         old_plan_name = None
@@ -212,10 +323,27 @@ def change_user_plan(user_id):
         user_subscription.api_calls_used = 0  # Reset usage when changing plans
         user_subscription.updated_at = datetime.utcnow()
         
-        # If changing from/to free plan, update status accordingly
-        if plan.name == 'Free':
+        if _is_paid_plan(plan):
+            # A paid plan selected in the admin is an explicit non-Stripe grant.
+            user_subscription.status = 'admin_granted'
             user_subscription.stripe_subscription_id = None
             user_subscription.stripe_customer_id = None
+            user_subscription.billing_cycle = 'manual'
+            user_subscription.current_period_start = None
+            user_subscription.current_period_end = None
+        else:
+            user_subscription.status = 'active'
+            user_subscription.stripe_subscription_id = None
+            user_subscription.stripe_customer_id = None
+            user_subscription.billing_cycle = 'monthly'
+            user_subscription.current_period_start = datetime.utcnow()
+            user_subscription.current_period_end = datetime.utcnow() + timedelta(days=30)
+
+        # The model is one subscription per user. Repair any legacy duplicate rows
+        # when an administrator explicitly changes that user's plan.
+        for duplicate in subscriptions:
+            if duplicate is not user_subscription:
+                db.session.delete(duplicate)
         
         db.session.commit()
         

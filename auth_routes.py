@@ -92,7 +92,10 @@ def _provision_free_plan_and_api_key(user):
     """Mirror post-registration defaults from register() for new OAuth users."""
     if not ApiKey.query.filter_by(user_id=user.id, is_active=True).first():
         user.generate_api_key("My First API Key")
-    existing_sub = UserSubscription.query.filter_by(user_id=user.id, status="active").first()
+    existing_sub = UserSubscription.query.filter(
+        UserSubscription.user_id == user.id,
+        UserSubscription.status.in_(("active", "trialing", "admin_granted")),
+    ).first()
     if existing_sub:
         return
     free_plan = SubscriptionPlan.query.filter_by(name="Free", is_active=True).first()
@@ -543,10 +546,12 @@ def dashboard():
     api_keys = [key for key in current_user.api_keys if key.is_active]
     
     # Get user's subscription plan
-    user_subscription = UserSubscription.query.filter_by(
-        user_id=current_user.id, 
-        status='active'
+    user_subscription = UserSubscription.query.filter(
+        UserSubscription.user_id == current_user.id,
+        UserSubscription.status.in_(('active', 'trialing', 'admin_granted')),
     ).first()
+    if user_subscription and not user_subscription.has_entitlement_source():
+        user_subscription = None
     
     # Check if user is on free plan
     is_free_plan = True  # Default to free plan if no subscription
@@ -577,10 +582,12 @@ def generate_api_key():
     form = ApiKeyForm()
     if form.validate_on_submit():
         # Check user's subscription plan
-        user_subscription = UserSubscription.query.filter_by(
-            user_id=current_user.id, 
-            status='active'
+        user_subscription = UserSubscription.query.filter(
+            UserSubscription.user_id == current_user.id,
+            UserSubscription.status.in_(('active', 'trialing', 'admin_granted')),
         ).first()
+        if user_subscription and not user_subscription.has_entitlement_source():
+            user_subscription = None
         
         # Count active API keys
         active_keys = ApiKey.query.filter_by(

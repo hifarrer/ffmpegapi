@@ -9,7 +9,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 os.environ.setdefault("SESSION_SECRET", "test-secret")
 
 from main import app, create_endless_loop_with_ffmpeg
-from models import ApiKey, SubscriptionPlan, User, UserSubscription, db
+from models import ApiKey, ApiLog, Job, SubscriptionPlan, User, UserSubscription, db
 
 
 class EndlessLoopEndpointTests(unittest.TestCase):
@@ -93,6 +93,35 @@ class EndlessLoopEndpointTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.get_json()["error"], "duration must be a positive number of seconds")
+
+    def test_job_status_request_is_recorded_in_api_history(self):
+        with app.app_context():
+            key = ApiKey.query.filter_by(key=self.api_key).one()
+            job = Job(
+                user_id=key.user_id,
+                job_type='endless_loop',
+                status='pending',
+            )
+            db.session.add(job)
+            db.session.commit()
+            job_id = job.job_id
+            user_id = key.user_id
+            api_key_id = key.id
+
+        response = self.client.get(
+            f'/api/job/{job_id}/status',
+            headers={'X-API-Key': self.api_key},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        with app.app_context():
+            log = ApiLog.query.filter_by(
+                user_id=user_id,
+                api_key_id=api_key_id,
+                endpoint=f'/api/job/{job_id}/status',
+            ).one()
+            self.assertEqual(log.method, 'GET')
+            self.assertEqual(log.status_code, 200)
 
     def test_success_reports_loop_math_for_partial_final_loop(self):
         captured = {}

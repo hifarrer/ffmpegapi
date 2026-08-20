@@ -208,17 +208,26 @@ def require_api_key(f):
         
         # Check user's subscription and API usage limits
         user = key_record.user
-        subscription = UserSubscription.query.filter_by(user_id=user.id, status='active').first()
+        subscription = UserSubscription.query.filter(
+            UserSubscription.user_id == user.id,
+            UserSubscription.status.in_(('active', 'trialing', 'admin_granted')),
+        ).first()
         
         if not subscription:
             # Try to assign free plan if user has no subscription
             free_plan = SubscriptionPlan.query.filter_by(name='Free', is_active=True).first()
             if free_plan:
-                subscription = UserSubscription()
-                subscription.user_id = user.id
+                subscription = (
+                    UserSubscription.query
+                    .filter_by(user_id=user.id)
+                    .order_by(UserSubscription.updated_at.desc().nullslast(), UserSubscription.id.desc())
+                    .first()
+                ) or UserSubscription(user_id=user.id)
                 subscription.plan_id = free_plan.id
                 subscription.status = 'active'
                 subscription.billing_cycle = 'monthly'
+                subscription.stripe_subscription_id = None
+                subscription.stripe_customer_id = None
                 subscription.current_period_start = datetime.utcnow()
                 subscription.current_period_end = datetime.utcnow() + timedelta(days=30)
                 subscription.api_calls_used = 0
@@ -231,6 +240,14 @@ def require_api_key(f):
                     'error': 'No active subscription found. Please contact support.'
                 }), 403
         
+        if not subscription.has_entitlement_source():
+            return jsonify({
+                'success': False,
+                'error': 'No verified paid entitlement was found. Please complete checkout or contact support.',
+                'current_plan': 'Free',
+                'upgrade_url': url_for('pricing', _external=True),
+            }), 403
+
         # Check if user can make API call
         if not subscription.can_make_api_call():
             plan_name = subscription.plan.name
@@ -5635,6 +5652,7 @@ def process_convert_to_tiktok_portrait_job(job, input_data):
 
 # Job status endpoint
 @app.route('/api/job/<job_id>/status', methods=['GET'])
+@log_api_request
 @require_api_key
 def get_job_status(job_id):
     """Get the status of an async job"""
