@@ -15,7 +15,11 @@ X-API-Key: your_api_key_here
 
 ## Asynchronous Processing
 
-All locally processed FFmpeg and Remotion endpoints accept `async: true`. They can also return HTTP 202 when all configured processing slots are occupied. The response includes `job_id`, `status`, `queue_position`, and `status_url`; poll the status endpoint until the job is completed or failed.
+Every locally processed FFmpeg and Remotion endpoint may either complete immediately with its existing endpoint-specific response or return HTTP `202 Accepted` when all configured processing slots are occupied. Setting `async: true` always requests the queued response path and returns `202`.
+
+A queued response includes `success`, `job_id`, `status`, `status_url`, `queue_position`, and `message`. `queue_position` may be null if processing has already started. Poll the returned `status_url` until the job is `completed` or `failed`. The externally processed `POST /api/youtube_to_mp4` endpoint is outside this queue.
+
+Authentication errors are returned before queueing. For most local endpoints, validation occurs when processing starts; consequently, a request accepted under load can later report `failed` rather than returning an immediate validation error.
 
 ## Endpoints
 
@@ -721,7 +725,7 @@ Content type: `query string or X-API-Key header`
 
 Parameters:
 
-- `job_id` (string, required): Job ID returned by an async request.
+- `job_id` (string, required): Job ID returned by a `202 Accepted` response.
 
 Example:
 

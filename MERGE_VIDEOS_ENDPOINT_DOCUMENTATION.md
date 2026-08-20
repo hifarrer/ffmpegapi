@@ -89,6 +89,7 @@ pip install flask requests
 | `dimensions` | `string` | No | Output dimensions in format `WIDTHxHEIGHT` (e.g., `1920x1080`) |
 | `subtitle_url` | `string` | No | URL to ASS/SSA subtitle file to burn into video |
 | `watermark_url` | `string` | No | URL to PNG watermark image |
+| `async` | `boolean` | No | Set to `true` to always return a queued job response. Defaults to `false`. |
 
 ### Example Request
 
@@ -116,6 +117,23 @@ pip install flask requests
   "filename": "uuid_merged_videos.mp4"
 }
 ```
+
+### Queued Response (202)
+
+This endpoint returns `202 Accepted` when `async` is `true` or when all local processing slots are occupied. A request with `async` omitted or set to `false` must therefore handle either the normal final response or this queued response:
+
+```json
+{
+  "success": true,
+  "job_id": "job_abc123",
+  "status": "pending",
+  "status_url": "https://your-domain.com/api/job/job_abc123/status",
+  "queue_position": 1,
+  "message": "Job queued for processing. Use the status URL to check progress."
+}
+```
+
+Poll `GET /api/job/{job_id}/status` until `status` is `completed` or `failed`. Authentication failures remain immediate; when this request is accepted under load, request validation can be reported later as a failed job.
 
 ### Error Response (400/500)
 

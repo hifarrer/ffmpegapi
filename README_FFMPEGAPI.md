@@ -51,13 +51,15 @@ X-API-Key: your_api_key_here
 
 ## Processing Modes
 
-All endpoints support two processing modes:
+All locally processed FFmpeg and Remotion endpoints support immediate and queued processing. The externally processed YouTube endpoint does not use the local queue.
 
 ### Synchronous (Default)
-Response includes the processed file immediately. Best for small files.
+When processing capacity is available and the request is eligible in FIFO order, the response includes the normal endpoint-specific result. If all processing slots are occupied, the API automatically returns `202 Accepted` with a job ID instead. Clients using the default mode must handle both response paths.
 
 ### Asynchronous
-Include `"async": true` in your request. Returns a job ID to check progress later. Best for large files or batch processing.
+Include `"async": true` in your request to always receive `202 Accepted` with a job ID. This is best for large files or batch processing. Poll the returned `status_url` until the job is completed or failed.
+
+Queued responses contain `success`, `job_id`, `status`, `status_url`, `queue_position`, and `message`. `queue_position` may be null after processing begins. Authentication errors remain immediate; under load, most other validation errors can be reported later as a failed job.
 
 ---
 
@@ -111,7 +113,7 @@ curl -X POST "https://ffmpegapi.net/api/merge_image_audio" \
   "job_id": "job_xyz789",
   "status": "pending",
   "queue_position": 1,
-  "message": "Job submitted for async processing",
+  "message": "Job queued for processing. Use the status URL to check progress.",
   "status_url": "https://ffmpegapi.net/api/job/job_xyz789/status"
 }
 ```
@@ -651,14 +653,30 @@ curl -X POST "https://ffmpegapi.net/api/youtube_to_mp4" \
 
 **Endpoint:** `GET /api/job/{job_id}/status`
 
-**Description:** Check the status of an asynchronous processing job.
+**Description:** Check the status of an explicitly asynchronous or automatically queued processing job.
 
 **URL Parameters:**
-- `job_id` (required): The job ID returned from an async request
+- `job_id` (required): The job ID returned from a `202 Accepted` response
 
 **curl Example:**
 ```bash
 curl -X GET "https://ffmpegapi.net/api/job/job_xyz789/status?api_key=your_api_key_here"
+```
+
+**Response (Pending):**
+```json
+{
+  "success": true,
+  "job_id": "job_xyz789",
+  "status": "pending",
+  "job_type": "merge_videos",
+  "queue_position": 1,
+  "created_at": "2026-08-20T12:00:00Z",
+  "updated_at": "2026-08-20T12:00:00Z",
+  "started_at": null,
+  "finished_at": null,
+  "attempt_count": 0
+}
 ```
 
 **Response (Processing):**
@@ -668,7 +686,11 @@ curl -X GET "https://ffmpegapi.net/api/job/job_xyz789/status?api_key=your_api_ke
   "job_id": "job_xyz789",
   "status": "processing",
   "job_type": "merge_videos",
-  "created_at": "2025-10-13T12:00:00Z"
+  "created_at": "2026-08-20T12:00:00Z",
+  "updated_at": "2026-08-20T12:00:05Z",
+  "started_at": "2026-08-20T12:00:02Z",
+  "finished_at": null,
+  "attempt_count": 1
 }
 ```
 
@@ -679,13 +701,14 @@ curl -X GET "https://ffmpegapi.net/api/job/job_xyz789/status?api_key=your_api_ke
   "job_id": "job_xyz789",
   "status": "completed",
   "job_type": "merge_videos",
-  "result": {
-    "success": true,
-    "download_url": "https://ffmpegapi.net/api/storage/merged_abc123.mp4",
-    "filename": "merged_abc123.mp4"
-  },
-  "created_at": "2025-10-13T12:00:00Z",
-  "completed_at": "2025-10-13T12:05:30Z"
+  "download_url": "https://ffmpegapi.net/api/storage/merged_abc123.mp4",
+  "result_url": "https://ffmpegapi.net/api/storage/merged_abc123.mp4",
+  "filename": "merged_abc123.mp4",
+  "created_at": "2026-08-20T12:00:00Z",
+  "updated_at": "2026-08-20T12:05:30Z",
+  "started_at": "2026-08-20T12:00:02Z",
+  "finished_at": "2026-08-20T12:05:30Z",
+  "attempt_count": 1
 }
 ```
 
@@ -696,12 +719,12 @@ curl -X GET "https://ffmpegapi.net/api/job/job_xyz789/status?api_key=your_api_ke
   "job_id": "job_xyz789",
   "status": "failed",
   "job_type": "merge_videos",
-  "result": {
-    "success": false,
-    "error": "Failed to download video from URL"
-  },
-  "created_at": "2025-10-13T12:00:00Z",
-  "completed_at": "2025-10-13T12:01:15Z"
+  "error": "Failed to download video from URL",
+  "created_at": "2026-08-20T12:00:00Z",
+  "updated_at": "2026-08-20T12:01:15Z",
+  "started_at": "2026-08-20T12:00:02Z",
+  "finished_at": "2026-08-20T12:01:15Z",
+  "attempt_count": 1
 }
 ```
 

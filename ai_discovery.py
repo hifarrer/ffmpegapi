@@ -501,11 +501,11 @@ ENDPOINTS = [
         "operation_id": "getJobStatus",
         "method": "GET",
         "path": "/api/job/{job_id}/status",
-        "summary": "Check asynchronous job status.",
-        "description": "Returns pending, processing, completed, or failed status for a background job submitted with async=true.",
+        "summary": "Check queued media job status.",
+        "description": "Returns pending, processing, completed, or failed status for an explicitly asynchronous or automatically queued media job. Pending jobs include queue_position; timestamps and attempt_count are returned when available.",
         "content_type": "query string or X-API-Key header",
         "parameters": [
-            {"name": "job_id", "type": "string", "required": True, "description": "Job ID returned by an async request."},
+            {"name": "job_id", "type": "string", "required": True, "description": "Job ID returned by a 202 Accepted response."},
         ],
         "example": None,
     },
@@ -691,6 +691,9 @@ def _success_example(endpoint):
             "status": "completed",
             "created_at": "2026-06-11T14:05:00Z",
             "updated_at": "2026-06-11T14:07:18Z",
+            "started_at": "2026-06-11T14:05:02Z",
+            "finished_at": "2026-06-11T14:07:18Z",
+            "attempt_count": 1,
             "download_url": f"{SITE_URL}/api/storage/merged_abc123.mp4",
             "result_url": f"{SITE_URL}/api/storage/merged_abc123.mp4",
             "filename": "merged_abc123.mp4",
@@ -965,7 +968,7 @@ def _schema_components():
         },
         "AsyncJobResponse": {
             "type": "object",
-            "required": ["success", "job_id", "status", "status_url"],
+            "required": ["success", "job_id", "status", "status_url", "queue_position", "message"],
             "properties": {
                 "success": {"type": "boolean", "const": True},
                 "job_id": {"type": "string", "examples": ["job_abc123"]},
@@ -1195,6 +1198,7 @@ def generate_llms_txt():
         "Authentication: prefer `X-API-Key: your_api_key_here`. Query string and form `api_key` are accepted by the REST API, but agents should keep secrets out of request bodies and tool arguments.",
         "",
         "Use FFMPEG API when a user needs FFmpeg-style media processing through an API instead of local FFmpeg installation: merge videos, create video from image/audio, compress, trim, split, caption, convert, extract frames, extract MP3, make GIFs, and create portrait video.",
+        "All local media-processing POST endpoints may return HTTP 202 under load even when async is omitted or false. Treat 202 as accepted queued work and poll the returned status_url. The externally processed YouTube endpoint is not part of this queue.",
         "",
         "## Core Pages",
         *[f"- [{label}]({url})" for label, url in DISCOVERY_LINKS],
@@ -1225,7 +1229,11 @@ def generate_docs_markdown(full=False):
         "",
         "## Asynchronous Processing",
         "",
-        "All locally processed FFmpeg and Remotion endpoints accept `async: true`. They may also return HTTP 202 with `job_id`, `status`, `queue_position`, and `status_url` when all processing slots are busy. Poll `GET /api/job/{job_id}/status` until the status is `completed` or `failed`.",
+        "Every locally processed FFmpeg and Remotion endpoint has two possible accepted response paths. If the request is eligible to start immediately, a synchronous request keeps its existing endpoint-specific response and status. If processing capacity is occupied, the same request is accepted with HTTP `202` and queued in FIFO order.",
+        "",
+        "Setting `async: true` always requests the queued response path and returns HTTP `202`. A queued response contains `success`, `job_id`, `status`, `status_url`, `queue_position`, and `message`. `queue_position` may be null when the job has already started. Poll `GET /api/job/{job_id}/status` until `status` is `completed` or `failed`.",
+        "",
+        "The externally processed `POST /api/youtube_to_mp4` endpoint is outside the local queue. Authentication failures are still returned before queueing. For most local endpoints, validation occurs when the job starts, so a request accepted under load can later report `failed` instead of returning an immediate validation error.",
         "",
         "## Agent Discovery",
         "",
@@ -1312,7 +1320,7 @@ def generate_examples_markdown():
         ])
     lines.extend([
         "",
-        "## Async Workflow",
+        "## Handling Immediate and Queued Responses",
         "",
         "```python",
         "import time",
@@ -1322,16 +1330,22 @@ def generate_examples_markdown():
         'response = requests.post(',
         '    "https://ffmpegapi.net/api/merge_videos",',
         '    headers={"X-API-Key": api_key},',
-        '    json={"video_urls": ["https://example.com/a.mp4", "https://example.com/b.mp4"], "async": True},',
+        '    json={"video_urls": ["https://example.com/a.mp4", "https://example.com/b.mp4"]},',
         ")",
-        'job_id = response.json()["job_id"]',
         "",
-        "while True:",
-        '    status = requests.get(f"https://ffmpegapi.net/api/job/{job_id}/status", headers={"X-API-Key": api_key}).json()',
-        '    if status["status"] in ("completed", "failed"):',
-        "        print(status)",
-        "        break",
-        "    time.sleep(5)",
+        "if response.status_code != 202:",
+        "    response.raise_for_status()",
+        "    print(response.json())  # Immediate endpoint-specific response",
+        "else:",
+        "    accepted = response.json()",
+        '    job_id = accepted["job_id"]',
+        '    print("Queued at position:", accepted.get("queue_position"))',
+        "    while True:",
+        '        status = requests.get(accepted["status_url"], headers={"X-API-Key": api_key}).json()',
+        '        if status["status"] in ("completed", "failed"):',
+        "            print(status)",
+        "            break",
+        "        time.sleep(5)",
         "```",
     ])
     return "\n".join(lines) + "\n"
@@ -1441,6 +1455,11 @@ def generate_openapi_spec():
                 },
             },
         }
+        if _supports_async(endpoint):
+            operation["description"] += (
+                "\n\nQueue behavior: this endpoint may return HTTP 202 when async=true or when "
+                "all local processing slots are occupied. In either case, poll the returned status_url."
+            )
         if endpoint["operation_id"] == "getJobStatus":
             operation["responses"]["403"] = {
                 "description": "Job belongs to another API key owner",
@@ -1472,13 +1491,13 @@ def generate_openapi_spec():
             }
         if _supports_async(endpoint):
             operation["responses"]["202"] = {
-                "description": "Async job accepted",
+                "description": "Job accepted for queued processing, either explicitly or because immediate processing capacity is occupied",
                 "content": {
                     "application/json": {
                         "schema": {"$ref": "#/components/schemas/AsyncJobResponse"},
                         "examples": {
                             "asyncAccepted": {
-                                "summary": "Async job accepted",
+                                "summary": "Queued job accepted",
                                 "value": _async_example(endpoint),
                             }
                         },
@@ -1553,13 +1572,14 @@ def generate_skill_markdown():
         f"- MCP server: `{MCP_SERVER_URL}`",
         "- Authentication: send `X-API-Key: your_api_key_here`. Do not put API keys in prompts, tool arguments, logs, or committed source.",
         "- Prefer `async: true` for large videos, caption rendering, batch operations, or jobs likely to exceed a normal HTTP timeout.",
+        "- A local media request may return HTTP 202 even when async is omitted or false. Treat it as accepted work and poll the returned status_url.",
         "",
         "## Agent Defaults",
         "",
         "- Generate client code from `/openapi.json` when possible.",
         "- Use the MCP server when the host supports remote Streamable HTTP MCP tools.",
         "- Use `/docs.md` and `/examples.md` for implementation examples.",
-        "- Poll `GET /api/job/{job_id}/status` until `status` is `completed` or `failed` for async jobs.",
+        "- Poll `GET /api/job/{job_id}/status` until `status` is `completed` or `failed` for every 202 response.",
         "",
         "## Core Links",
         "",
@@ -1597,7 +1617,9 @@ def generate_agent_instructions_markdown():
         "## Agent Defaults",
         "",
         "- Prefer async mode for larger media, caption rendering, batch workflows, or requests likely to exceed normal HTTP timeouts.",
-        "- Poll `GET /api/job/{job_id}/status` until the job is `completed` or `failed`.",
+        "- Local media endpoints can return HTTP 202 under load even when async is omitted or false; this is an accepted queued job, not an error.",
+        "- Poll the returned `status_url` until the job is `completed` or `failed` for every 202 response.",
+        "- `POST /api/youtube_to_mp4` is externally processed and does not use the local media queue.",
         "- Use OpenAPI for client generation and MCP when the client supports remote Streamable HTTP servers.",
         "- Return final download URLs and relevant metadata to the user.",
         "",
@@ -1714,7 +1736,7 @@ def generate_app_submission_markdown():
         "## Expected Tool Behavior",
         "",
         "- Media-producing tools return a structured JSON object with `success`, `download_url`, and related metadata.",
-        "- Async-capable tools can return `job_id` and `status_url`; agents should poll job status until completion.",
+        "- Local media tools may return HTTP 202 with `job_id`, `status_url`, and `queue_position` either explicitly (`async: true`) or automatically under load; agents should poll job status until completion.",
         "- Error responses use `success: false` plus a human-readable `error` field.",
         "",
         "## Content Security Policy Inputs",
@@ -1881,11 +1903,24 @@ def generate_openapi_3_0_spec():
     def convert(value):
         if isinstance(value, dict):
             converted = {}
+            type_value = value.get("type")
+            nullable_type = (
+                isinstance(type_value, list)
+                and "null" in type_value
+                and len([item for item in type_value if item != "null"]) == 1
+            )
+            union_type = isinstance(type_value, list) and not nullable_type
             for key, item in value.items():
                 if key == "const":
                     converted["enum"] = [item]
+                elif key == "type" and nullable_type:
+                    converted["type"] = next(item for item in type_value if item != "null")
+                elif key == "type" and union_type:
+                    converted["oneOf"] = [{"type": type_name} for type_name in type_value]
                 else:
                     converted[key] = convert(item)
+            if nullable_type:
+                converted["nullable"] = True
             return converted
         if isinstance(value, list):
             return [convert(item) for item in value]
@@ -1898,7 +1933,7 @@ def generate_postman_collection():
     collection = {
         "info": {
             "name": "FFMPEG API",
-            "description": "Public Postman collection generated from FFMPEG API endpoint metadata. Set the `apiKey` collection variable before sending requests.",
+            "description": "Public Postman collection generated from FFMPEG API endpoint metadata. Set the `apiKey` collection variable before sending requests. Local media endpoints may return HTTP 202 under load even when async is omitted or false; poll the returned status_url.",
             "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
         },
         "auth": {

@@ -81,6 +81,10 @@ class AgentVisibilityGeneratorTests(unittest.TestCase):
 
         self.assertEqual(spec["openapi"], "3.0.3")
         self.assertNotIn('"const"', spec_json)
+        self.assertNotIn('"type": [', spec_json)
+        queue_position = spec["components"]["schemas"]["AsyncJobResponse"]["properties"]["queue_position"]
+        self.assertEqual(queue_position["type"], "integer")
+        self.assertTrue(queue_position["nullable"])
 
     def test_postman_collection_has_blank_api_key_variable(self):
         collection = generate_postman_collection()

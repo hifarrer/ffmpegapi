@@ -5,6 +5,7 @@ from ai_discovery import (
     ENDPOINTS,
     error_examples_for_endpoint,
     generate_app_submission_markdown,
+    generate_docs_markdown,
     generate_llms_txt,
     generate_openapi_spec,
     generate_skill_markdown,
@@ -58,6 +59,13 @@ class AiDiscoveryCatalogTests(unittest.TestCase):
         self.assertIn("/privacy", submission)
         self.assertIn("/terms", submission)
 
+    def test_generated_docs_explain_automatic_queueing(self):
+        docs = generate_docs_markdown(full=True)
+        self.assertIn("same request is accepted with HTTP `202`", docs)
+        self.assertIn("`queue_position` may be null", docs)
+        self.assertIn("youtube_to_mp4", docs)
+        self.assertIn("can later report `failed`", docs)
+
 
 class OpenApiDiscoveryTests(unittest.TestCase):
     def test_openapi_has_all_public_endpoint_contracts(self):
@@ -103,6 +111,24 @@ class OpenApiDiscoveryTests(unittest.TestCase):
                     content = operation["responses"][status_code]["content"]["application/json"]
                     self.assertIn("examples", content)
                     self.assertFalse(content["examples"]["error"]["value"]["success"])
+
+    def test_local_media_operations_document_queued_202_contract(self):
+        spec = generate_openapi_spec()
+        required = set(spec["components"]["schemas"]["AsyncJobResponse"]["required"])
+        self.assertTrue({"queue_position", "message", "status_url"}.issubset(required))
+
+        for endpoint in ENDPOINTS:
+            if endpoint["method"] != "POST":
+                continue
+            operation = spec["paths"][endpoint["path"]]["post"]
+            if endpoint["path"] == "/api/youtube_to_mp4":
+                self.assertNotIn("202", operation["responses"])
+                continue
+            with self.subTest(endpoint=endpoint["operation_id"]):
+                self.assertIn("202", operation["responses"])
+                self.assertIn("processing capacity is occupied", operation["responses"]["202"]["description"])
+                properties = operation["requestBody"]["content"]["application/json"]["schema"]["properties"]
+                self.assertIn("async", properties)
 
 
 if __name__ == "__main__":
