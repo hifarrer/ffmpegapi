@@ -19,13 +19,17 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install Node deps and pre-download Chrome Headless Shell at build time
-COPY package.json ./
-RUN npm install \
-    && npx remotion browser ensure
+COPY package.json package-lock.json ./
+RUN npm ci \
+    && npx --no-install remotion browser ensure
 
 COPY . .
 
+# Bundle the Remotion composition once; runtime caption jobs reuse this static bundle.
+RUN npm run build:remotion
+
 ENV PORT=5000
+ENV REMOTION_BUNDLE_PATH=/app/dist/remotion
 EXPOSE $PORT
 
-CMD gunicorn -b 0.0.0.0:${PORT} main:app --timeout 1800 --graceful-timeout 1800
+CMD gunicorn -b 0.0.0.0:${PORT} main:app --workers 1 --worker-class gthread --threads 4 --timeout 1800 --graceful-timeout 1800

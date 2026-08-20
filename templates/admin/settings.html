@@ -90,6 +90,13 @@
                 </div>
                 <div class="card-body">
                     <div class="mb-3">
+                        <label for="concurrentJobs" class="form-label">Concurrent Jobs</label>
+                        <input type="number" class="form-control" id="concurrentJobs" name="concurrent_jobs"
+                               value="{{ settings.concurrent_jobs or 2 }}" min="1" max="8" required>
+                        <div class="form-text">Maximum FFmpeg or Remotion jobs allowed to run at once. New work waits in FIFO order.</div>
+                    </div>
+
+                    <div class="mb-3">
                         <label for="maxProcessingTime" class="form-label">Maximum Processing Time (minutes)</label>
                         <input type="number" class="form-control" id="maxProcessingTime" name="max_processing_time" 
                                value="30" min="1" max="120">
@@ -155,8 +162,14 @@
                     </div>
                     <div class="mb-3">
                         <div class="d-flex justify-content-between align-items-center">
-                            <span>Memory Usage</span>
-                            <span class="badge bg-warning">72%</span>
+                            <span>Running Jobs</span>
+                            <span class="badge bg-primary">{{ queue_counts.running }}</span>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <span>Queued Jobs</span>
+                            <span class="badge bg-secondary">{{ queue_counts.pending }}</span>
                         </div>
                     </div>
                 </div>

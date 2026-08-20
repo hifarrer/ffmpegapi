@@ -9,7 +9,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 os.environ.setdefault("SESSION_SECRET", "test-secret")
 
 from main import app
-from models import ApiKey, Job, SubscriptionPlan, User, UserSubscription, db
+from models import ApiKey, Job, SiteSettings, SubscriptionPlan, User, UserSubscription, db
 
 
 class CompressVideoEndpointTests(unittest.TestCase):
@@ -20,6 +20,9 @@ class CompressVideoEndpointTests(unittest.TestCase):
 
         with app.app_context():
             db.create_all()
+            Job.query.delete()
+            SiteSettings.get_settings().concurrent_jobs = 2
+            db.session.commit()
             plan = SubscriptionPlan.query.filter_by(name="Compress Test").first()
             if not plan:
                 plan = SubscriptionPlan(
@@ -42,6 +45,7 @@ class CompressVideoEndpointTests(unittest.TestCase):
             user.set_password("password")
             db.session.add(user)
             db.session.commit()
+            self.user_id = user.id
 
             key = ApiKey(key=self.api_key, name="Test key", user_id=user.id, is_active=True)
             subscription = UserSubscription(
@@ -176,22 +180,11 @@ class CompressVideoEndpointTests(unittest.TestCase):
         compress.assert_not_called()
 
     def test_large_sync_request_auto_creates_async_job(self):
-        started = {"value": False}
         detected_size = 101 * 1024 * 1024
-
-        class FakeThread:
-            def __init__(self, target, args):
-                self.target = target
-                self.args = args
-                self.daemon = False
-
-            def start(self):
-                started["value"] = True
 
         with patch("main.get_remote_file_size_bytes", return_value=(detected_size, None)), \
              patch("main.COMPRESS_VIDEO_MAX_INPUT_BYTES", 500 * 1024 * 1024), \
-             patch("main.COMPRESS_VIDEO_SYNC_MAX_BYTES", 100 * 1024 * 1024), \
-             patch("main.threading.Thread", FakeThread):
+             patch("main.COMPRESS_VIDEO_SYNC_MAX_BYTES", 100 * 1024 * 1024):
             response = self.post_json({
                 "video_url": "https://example.com/video.mp4",
                 "crf": 28,
@@ -200,7 +193,6 @@ class CompressVideoEndpointTests(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(response.status_code, 202)
         self.assertTrue(payload["success"])
-        self.assertTrue(started["value"])
         self.assertEqual(payload["detected_size_bytes"], detected_size)
         self.assertIn("synchronous compression limit", payload["message"])
 
@@ -208,22 +200,12 @@ class CompressVideoEndpointTests(unittest.TestCase):
             job = Job.query.filter_by(job_id=payload["job_id"]).first()
             self.assertIsNotNone(job)
             self.assertEqual(job.job_type, "compress_video")
-            self.assertTrue(json.loads(job.input_data)["async"])
+            queued_input = json.loads(job.input_data)
+            self.assertTrue(queued_input["_requested_async"])
+            self.assertEqual(queued_input["_queued_json"]["crf"], 28)
 
     def test_async_request_creates_job(self):
-        started = {"value": False}
-
-        class FakeThread:
-            def __init__(self, target, args):
-                self.target = target
-                self.args = args
-                self.daemon = False
-
-            def start(self):
-                started["value"] = True
-
-        with patch("main.get_remote_file_size_bytes", return_value=(None, None)), \
-             patch("main.threading.Thread", FakeThread):
+        with patch("main.get_remote_file_size_bytes", return_value=(None, None)):
             response = self.post_json({
                 "video_url": "https://example.com/video.mp4",
                 "crf": 28,
@@ -233,14 +215,42 @@ class CompressVideoEndpointTests(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(response.status_code, 202)
         self.assertTrue(payload["success"])
-        self.assertTrue(started["value"])
 
         with app.app_context():
             job = Job.query.filter_by(job_id=payload["job_id"]).first()
             self.assertIsNotNone(job)
             self.assertEqual(job.job_type, "compress_video")
             self.assertEqual(job.status, "pending")
-            self.assertEqual(json.loads(job.input_data)["crf"], 28)
+            queued_input = json.loads(job.input_data)
+            self.assertTrue(queued_input["_requested_async"])
+            self.assertEqual(queued_input["_queued_json"]["crf"], 28)
+
+    def test_sync_request_is_automatically_queued_when_capacity_is_busy(self):
+        with app.app_context():
+            settings = SiteSettings.get_settings()
+            settings.concurrent_jobs = 1
+            blocker = Job(
+                user_id=self.user_id,
+                job_type="queue-blocker",
+                status="processing",
+                input_data="{}",
+                worker_id="other-replica",
+                lease_expires_at=datetime.utcnow() + timedelta(minutes=5),
+                attempt_count=1,
+            )
+            db.session.add(blocker)
+            db.session.commit()
+
+        with patch("main.get_remote_file_size_bytes", return_value=(None, None)):
+            response = self.post_json({
+                "video_url": "https://example.com/video.mp4",
+                "crf": 28,
+            })
+
+        payload = response.get_json()
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(payload["status"], "pending")
+        self.assertEqual(payload["queue_position"], 1)
 
 
 if __name__ == "__main__":

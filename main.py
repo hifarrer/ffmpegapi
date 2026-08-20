@@ -1,6 +1,6 @@
 import os
 import logging
-import subprocess
+import subprocess as _subprocess
 import uuid
 import tempfile
 import threading
@@ -11,16 +11,18 @@ import random
 import secrets
 from datetime import datetime, timedelta
 from functools import wraps
-from flask import Flask, render_template, request, jsonify, send_from_directory, url_for, flash, redirect, Response, send_file, abort
+from flask import Flask, render_template, request, jsonify, send_from_directory, url_for, flash, redirect, Response, send_file, abort, g, make_response
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, login_required, current_user
 from sqlalchemy.exc import OperationalError, PendingRollbackError
+from sqlalchemy import and_, or_, text
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.middleware.proxy_fix import ProxyFix
 import mimetypes
 import resend
 import shutil
+import signal
 
 from models import db, User, ApiKey, SubscriptionPlan, StripeSettings, UserSubscription, SiteSettings, Job, ApiLog, BlogArticle, SITE_DEFAULT_API_KEY
 import time
@@ -53,6 +55,181 @@ from ai_discovery import (
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
 
+
+class _BoundedDiskTail:
+    """Thread-safe disk ring buffer used for subprocess output."""
+
+    def __init__(self, max_bytes=1024 * 1024):
+        self.max_bytes = max_bytes
+        self.handle = tempfile.TemporaryFile(mode='w+b')
+        self.position = 0
+        self.size = 0
+        self.lock = threading.Lock()
+
+    def write(self, chunk):
+        if isinstance(chunk, str):
+            chunk = chunk.encode('utf-8', errors='replace')
+        if not chunk:
+            return
+        if len(chunk) >= self.max_bytes:
+            chunk = chunk[-self.max_bytes:]
+        with self.lock:
+            first_length = min(len(chunk), self.max_bytes - self.position)
+            self.handle.seek(self.position)
+            self.handle.write(chunk[:first_length])
+            remaining = chunk[first_length:]
+            if remaining:
+                self.handle.seek(0)
+                self.handle.write(remaining)
+            self.position = (self.position + len(chunk)) % self.max_bytes
+            self.size = min(self.max_bytes, self.size + len(chunk))
+
+    def read(self, text_mode):
+        with self.lock:
+            self.handle.flush()
+            if self.size < self.max_bytes:
+                self.handle.seek(0)
+                data = self.handle.read(self.size)
+            else:
+                self.handle.seek(self.position)
+                data = self.handle.read(self.max_bytes - self.position)
+                self.handle.seek(0)
+                data += self.handle.read(self.position)
+        return data.decode('utf-8', errors='replace') if text_mode else data
+
+    def close(self):
+        self.handle.close()
+
+
+def _drain_process_stream(stream, capture):
+    try:
+        while True:
+            chunk = stream.read(64 * 1024)
+            if not chunk:
+                break
+            capture.write(chunk)
+    finally:
+        stream.close()
+
+
+def _bounded_subprocess_run(
+    args,
+    *,
+    capture_output=False,
+    text=False,
+    timeout=None,
+    input=None,
+    cwd=None,
+    **kwargs,
+):
+    """subprocess.run-compatible helper with disk-backed, bounded output capture."""
+    check = bool(kwargs.pop('check', False))
+    command = list(args) if isinstance(args, (list, tuple)) else args
+    if isinstance(command, list) and command:
+        executable = os.path.basename(str(command[0])).lower()
+        if executable in ('ffmpeg', 'ffmpeg.exe') and '-loglevel' not in command:
+            command = [
+                command[0], '-nostdin', '-hide_banner', '-loglevel', 'error', '-nostats', *command[1:]
+            ]
+
+    stdout_capture = _BoundedDiskTail() if capture_output else None
+    stderr_capture = _BoundedDiskTail() if capture_output else None
+    popen_kwargs = dict(kwargs)
+    if capture_output:
+        if 'stdout' in popen_kwargs or 'stderr' in popen_kwargs:
+            raise ValueError('stdout and stderr arguments may not be used with capture_output')
+        popen_kwargs['stdout'] = _subprocess.PIPE
+        popen_kwargs['stderr'] = _subprocess.PIPE
+    if input is not None:
+        popen_kwargs['stdin'] = _subprocess.PIPE
+    popen_kwargs['text'] = text
+    if os.name == 'nt':
+        popen_kwargs['creationflags'] = popen_kwargs.get('creationflags', 0) | _subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs['start_new_session'] = True
+
+    process = _subprocess.Popen(command, cwd=cwd, **popen_kwargs)
+    reader_threads = []
+    if capture_output:
+        reader_threads = [
+            threading.Thread(
+                target=_drain_process_stream,
+                args=(process.stdout, stdout_capture),
+                name='subprocess-stdout',
+                daemon=True,
+            ),
+            threading.Thread(
+                target=_drain_process_stream,
+                args=(process.stderr, stderr_capture),
+                name='subprocess-stderr',
+                daemon=True,
+            ),
+        ]
+        for reader in reader_threads:
+            reader.start()
+    try:
+        if capture_output:
+            if input is not None:
+                try:
+                    process.stdin.write(input)
+                    process.stdin.close()
+                except BrokenPipeError:
+                    pass
+            process.wait(timeout=timeout)
+        else:
+            process.communicate(input=input, timeout=timeout)
+    except _subprocess.TimeoutExpired:
+        if os.name == 'nt':
+            try:
+                _subprocess.run(
+                    ['taskkill', '/PID', str(process.pid), '/T', '/F'],
+                    stdout=_subprocess.DEVNULL,
+                    stderr=_subprocess.DEVNULL,
+                    check=False,
+                    timeout=10,
+                )
+            except Exception:
+                logging.warning('taskkill could not terminate process tree %s', process.pid, exc_info=True)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        process.wait()
+        for reader in reader_threads:
+            reader.join(timeout=5)
+        stdout = stdout_capture.read(text) if stdout_capture else None
+        stderr = stderr_capture.read(text) if stderr_capture else None
+        if stdout_capture:
+            stdout_capture.close()
+        if stderr_capture:
+            stderr_capture.close()
+        raise _subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr)
+
+    for reader in reader_threads:
+        reader.join(timeout=5)
+    stdout = stdout_capture.read(text) if stdout_capture else None
+    stderr = stderr_capture.read(text) if stderr_capture else None
+    if stdout_capture:
+        stdout_capture.close()
+    if stderr_capture:
+        stderr_capture.close()
+    completed = _subprocess.CompletedProcess(command, process.returncode, stdout=stdout, stderr=stderr)
+    if check:
+        completed.check_returncode()
+    return completed
+
+
+class _BoundedSubprocessProxy:
+    run = staticmethod(_bounded_subprocess_run)
+    TimeoutExpired = _subprocess.TimeoutExpired
+
+
+subprocess = _BoundedSubprocessProxy()
+
 # Initialize Flask app
 app = Flask(__name__)
 app.secret_key = os.environ.get("SESSION_SECRET")
@@ -80,9 +257,9 @@ else:
     app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
         'pool_pre_ping': True,
         "pool_recycle": 300,
-        "pool_size": 20,  # Increased for concurrent video processing
-        "max_overflow": 40,  # Increased for burst traffic
-        "pool_timeout": 120,  # Increased to handle connection pool exhaustion
+        "pool_size": 6,
+        "max_overflow": 4,
+        "pool_timeout": 30,
     }
 
 # Production detection: Replit or Railway (and similar platforms)
@@ -164,6 +341,21 @@ app.register_blueprint(stripe_bp, url_prefix='/api/stripe')
 # Create tables and default data
 with app.app_context():
     db.create_all()
+    if db.engine.dialect.name == 'postgresql':
+        queue_schema_statements = [
+            "ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS concurrent_jobs INTEGER NOT NULL DEFAULT 2",
+            "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS started_at TIMESTAMP",
+            "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS finished_at TIMESTAMP",
+            "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS worker_id VARCHAR(128)",
+            "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMP",
+            "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0",
+            "CREATE INDEX IF NOT EXISTS ix_jobs_status_created_at ON jobs (status, created_at, id)",
+            "CREATE INDEX IF NOT EXISTS ix_jobs_worker_id ON jobs (worker_id)",
+            "CREATE INDEX IF NOT EXISTS ix_jobs_lease_expires_at ON jobs (lease_expires_at)",
+        ]
+        for statement in queue_schema_statements:
+            db.session.execute(text(statement))
+        db.session.commit()
     
     # Create default site user and API key if they don't exist
     site_user = User.query.filter_by(username='site_default').first()
@@ -395,6 +587,228 @@ def log_api_request(f):
         return response
     
     return decorated_function
+
+
+# Media endpoints register their undecorated processing body here. Queue workers replay
+# the already-authenticated request without recursively passing through the queue.
+_queued_media_handlers = {}
+media_job_queue = None
+
+
+def _get_media_job_queue():
+    global media_job_queue
+    if media_job_queue is None:
+        from job_queue import MediaJobQueue
+        media_job_queue = MediaJobQueue(app, db, Job, SiteSettings, process_job_async)
+        app.extensions['media_job_queue'] = media_job_queue
+    media_job_queue.ensure_started()
+    return media_job_queue
+
+
+def _serialize_media_request():
+    serialized = {
+        '_queued_endpoint': request.endpoint,
+        '_queued_path': request.path,
+        '_queued_query': {
+            key: value for key, value in request.args.items() if key.lower() != 'api_key'
+        },
+        '_queued_files': [],
+    }
+    if request.is_json:
+        payload = {
+            key: value
+            for key, value in dict(request.get_json(silent=True) or {}).items()
+            if key.lower() != 'api_key'
+        }
+        explicit_async = payload.get('async') is True
+        payload['async'] = False
+        serialized['_queued_json'] = payload
+        serialized['_requested_async'] = explicit_async
+    else:
+        form_data = {
+            key: [value for value in values if key.lower() != 'api_key']
+            for key, values in request.form.lists()
+            if key.lower() != 'api_key'
+        }
+        explicit_async = str(request.form.get('async', '')).strip().lower() == 'true'
+        form_data['async'] = ['false']
+        serialized['_queued_form'] = form_data
+        serialized['_requested_async'] = explicit_async
+
+        os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+        for field_name, files in request.files.lists():
+            for uploaded in files:
+                original_name = secure_filename(uploaded.filename or 'upload.bin')
+                spool_name = f"queued-{uuid.uuid4().hex}-{original_name}"
+                spool_path = os.path.join(UPLOAD_FOLDER, spool_name)
+                uploaded.save(spool_path)
+                serialized['_queued_files'].append({
+                    'field': field_name,
+                    'path': os.path.abspath(spool_path),
+                    'filename': original_name,
+                    'content_type': uploaded.content_type or 'application/octet-stream',
+                })
+    return serialized
+
+
+def _queued_response(job, queue_manager):
+    response = {
+        'success': True,
+        'job_id': job.job_id,
+        'status': job.status,
+        'queue_position': queue_manager.queue_position(job) if job.status == 'pending' else None,
+        'message': 'Job queued for processing. Use the status URL to check progress.',
+        'status_url': url_for('get_job_status', job_id=job.job_id, _external=True),
+    }
+    input_data = job.get_input_data() or {}
+    if input_data.get('_queue_message'):
+        response['message'] = input_data['_queue_message']
+    if input_data.get('_detected_size_bytes') is not None:
+        response['detected_size_bytes'] = input_data['_detected_size_bytes']
+    return jsonify(response), 202
+
+
+def queue_media_job(job_type):
+    """Persist a media request and run it immediately only when a FIFO slot is free."""
+    def decorator(processing_function):
+        _queued_media_handlers[job_type] = processing_function
+
+        @wraps(processing_function)
+        def queued(*args, **kwargs):
+            if getattr(g, 'inside_media_job', False):
+                return processing_function(*args, **kwargs)
+
+            compression_meta = {}
+            if job_type == 'compress_video' and request.is_json:
+                request_payload = request.get_json(silent=True) or {}
+                validated, validation_error = _validate_compress_video_input(request_payload)
+                if validation_error:
+                    return jsonify({'success': False, 'error': validation_error}), 400
+                detected_size, _ = get_remote_file_size_bytes(validated['video_url'])
+                if detected_size is not None and detected_size > COMPRESS_VIDEO_MAX_INPUT_BYTES:
+                    return jsonify({
+                        'success': False,
+                        'error': _compress_video_size_error(detected_size),
+                        'detected_size_bytes': detected_size,
+                        'max_size_mb': COMPRESS_VIDEO_MAX_INPUT_MB,
+                    }), 413
+                if detected_size is not None and detected_size > COMPRESS_VIDEO_SYNC_MAX_BYTES:
+                    compression_meta = {
+                        '_force_async': True,
+                        '_detected_size_bytes': detected_size,
+                        '_queue_message': (
+                            'Video is larger than the synchronous compression limit, so it was submitted '
+                            'for async processing. Use the job status URL to check progress.'
+                        ),
+                    }
+
+            serialized = _serialize_media_request()
+            serialized.update(compression_meta)
+            if serialized.get('_force_async'):
+                serialized['_requested_async'] = True
+            user_id = getattr(request, 'api_user_id', None)
+            if user_id is None:
+                api_key = request.headers.get('X-API-Key') or request.args.get('api_key') or request.form.get('api_key')
+                key_record = ApiKey.query.filter_by(key=api_key, is_active=True).first()
+                user_id = key_record.user_id
+
+            job = Job(
+                user_id=user_id,
+                job_type=job_type,
+                status='pending',
+                input_data=json.dumps(serialized),
+            )
+            db.session.add(job)
+            db.session.commit()
+
+            queue_manager = _get_media_job_queue()
+            if (
+                serialized.get('_requested_async')
+                and app.config.get('TESTING')
+                and not app.config.get('MEDIA_QUEUE_BACKGROUND_IN_TESTS', False)
+            ):
+                return _queued_response(job, queue_manager)
+            claimed = queue_manager.dispatch_now()
+            future = claimed.get(job.job_id) or queue_manager.future_for(job.job_id)
+
+            if serialized.get('_requested_async') or future is None:
+                queue_manager.wake()
+                fresh_job = Job.query.filter_by(job_id=job.job_id).first()
+                return _queued_response(fresh_job, queue_manager)
+
+            outcome = future.result()
+            payload = outcome.get('payload') or {
+                'success': False,
+                'error': 'Media job finished without a response payload',
+            }
+            return jsonify(payload), int(outcome.get('status_code') or (200 if payload.get('success') else 500))
+
+        return queued
+    return decorator
+
+
+def _execute_queued_media_request(job, input_data):
+    handler = _queued_media_handlers.get(job.job_type)
+    if handler is None:
+        return {'success': False, 'error': f'No queued handler for job type: {job.job_type}', '_http_status': 500}
+
+    open_files = []
+    spool_paths = [item.get('path') for item in input_data.get('_queued_files', []) if item.get('path')]
+    try:
+        query = input_data.get('_queued_query') or {}
+        headers = {'X-API-Key': 'queued-media-worker'}
+        if '_queued_json' in input_data:
+            context = app.test_request_context(
+                input_data.get('_queued_path') or '/',
+                method='POST',
+                query_string=query,
+                json=input_data.get('_queued_json') or {},
+                headers=headers,
+            )
+        else:
+            form_payload = {}
+            for key, values in (input_data.get('_queued_form') or {}).items():
+                form_payload[key] = values if len(values) != 1 else values[0]
+            grouped_files = {}
+            for item in input_data.get('_queued_files', []):
+                handle = open(item['path'], 'rb')
+                open_files.append(handle)
+                grouped_files.setdefault(item['field'], []).append(
+                    (handle, item['filename'], item.get('content_type') or 'application/octet-stream')
+                )
+            for field, values in grouped_files.items():
+                form_payload[field] = values if len(values) != 1 else values[0]
+            context = app.test_request_context(
+                input_data.get('_queued_path') or '/',
+                method='POST',
+                query_string=query,
+                data=form_payload,
+                headers=headers,
+            )
+
+        with context:
+            g.inside_media_job = True
+            handler_result = handler()
+            response = make_response(*handler_result) if isinstance(handler_result, tuple) else make_response(handler_result)
+            payload = response.get_json(silent=True)
+            if not isinstance(payload, dict):
+                payload = {
+                    'success': 200 <= response.status_code < 300,
+                    'message': response.get_data(as_text=True)[:5000],
+                }
+            payload['_http_status'] = response.status_code
+            return payload
+    except Exception as exc:
+        logging.exception('Queued endpoint replay failed for %s', job.job_id)
+        return {'success': False, 'error': f'Server error: {exc}', '_http_status': 500}
+    finally:
+        for handle in open_files:
+            try:
+                handle.close()
+            except Exception:
+                pass
+        for spool_path in spool_paths:
+            cleanup_file(spool_path)
 
 def allowed_file(filename, allowed_extensions):
     """Check if file has allowed extension"""
@@ -2465,6 +2879,7 @@ def contact():
 @app.route('/api/merge_image_audio', methods=['POST'])
 @log_api_request
 @require_api_key
+@queue_media_job('merge_image_audio')
 def merge_image_audio():
     """API endpoint to merge image/audio pairs into a video from URLs or files (sync/async)"""
     # Log full request details for debugging
@@ -2618,9 +3033,7 @@ def merge_image_audio():
                 db.session.commit()
                 
                 # Start background processing
-                thread = threading.Thread(target=process_job_async, args=(job.job_id,))
-                thread.daemon = True
-                thread.start()
+                _get_media_job_queue().wake()
                 
                 return jsonify({
                     'success': True,
@@ -2786,6 +3199,7 @@ def merge_image_audio():
 @app.route('/api/merge_videos', methods=['POST'])
 @log_api_request
 @require_api_key
+@queue_media_job('merge_videos')
 def merge_videos():
     """API endpoint to merge multiple videos from URLs (sync/async)"""
     # Log full request details for debugging
@@ -2818,9 +3232,7 @@ def merge_videos():
             db.session.commit()
             
             # Start background processing
-            thread = threading.Thread(target=process_job_async, args=(job.job_id,))
-            thread.daemon = True
-            thread.start()
+            _get_media_job_queue().wake()
             
             return jsonify({
                 'success': True,
@@ -3076,6 +3488,7 @@ def merge_videos():
 @app.route('/api/neonvideo_merge_videos', methods=['POST'])
 @log_api_request
 @require_api_key
+@queue_media_job('neonvideo_merge_videos')
 def neonvideo_merge_videos():
     """Neonvideo-only endpoint: merge videos with optional outro_url. Outro plays with its own sound (main audio stops during outro). Not public (no UI/docs)."""
     api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
@@ -3093,9 +3506,7 @@ def neonvideo_merge_videos():
             job.set_input_data(data)
             db.session.add(job)
             db.session.commit()
-            thread = threading.Thread(target=process_job_async, args=(job.job_id,))
-            thread.daemon = True
-            thread.start()
+            _get_media_job_queue().wake()
             return jsonify({
                 'success': True,
                 'job_id': job.job_id,
@@ -3301,6 +3712,7 @@ def neonvideo_merge_videos():
 @app.route('/api/picture_in_picture', methods=['POST'])
 @log_api_request
 @require_api_key
+@queue_media_job('picture_in_picture')
 def picture_in_picture():
     """API endpoint to create picture-in-picture video (sync/async)"""
     # Log full request details for debugging
@@ -3333,9 +3745,7 @@ def picture_in_picture():
             db.session.commit()
             
             # Start background processing
-            thread = threading.Thread(target=process_job_async, args=(job.job_id,))
-            thread.daemon = True
-            thread.start()
+            _get_media_job_queue().wake()
             
             return jsonify({
                 'success': True,
@@ -3456,6 +3866,7 @@ def picture_in_picture():
 @app.route('/api/add_watermark', methods=['POST'])
 @log_api_request
 @require_api_key
+@queue_media_job('add_watermark')
 def add_watermark():
     """API endpoint to add a watermark image to a video (sync/async)"""
     api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
@@ -3478,9 +3889,7 @@ def add_watermark():
             db.session.add(job)
             db.session.commit()
 
-            thread = threading.Thread(target=process_job_async, args=(job.job_id,))
-            thread.daemon = True
-            thread.start()
+            _get_media_job_queue().wake()
 
             return jsonify({
                 'success': True,
@@ -4394,13 +4803,16 @@ def safe_update_job_status(job, status, error_message=None):
             return False
     return False
 
-def safe_set_result_data(job_id, result_data):
+def safe_set_result_data(job_id, result_data, worker_id=None):
     """Safely set job result data with proper error handling for database connection issues"""
     max_retries = 3
     for attempt in range(max_retries):
         try:
             # Create a fresh query to get the job
-            job = Job.query.filter_by(job_id=job_id).first()
+            query = Job.query.filter_by(job_id=job_id)
+            if worker_id:
+                query = query.filter(Job.worker_id == worker_id)
+            job = query.first()
             if job:
                 job.result_data = json.dumps(result_data)
                 job.updated_at = datetime.utcnow()
@@ -4462,20 +4874,48 @@ def safe_update_job_status_by_id(job_id, status, error_message=None):
             return False
     return False
 
-def process_job_async(job_id):
-    """Process a job asynchronously in background thread"""
+def _finalize_job(job_id, status, worker_id=None, error_message=None):
+    query = Job.query.filter_by(job_id=job_id)
+    if worker_id:
+        query = query.filter(Job.worker_id == worker_id)
+    job = query.first()
+    if not job:
+        logging.warning('Ignoring stale completion for media job %s', job_id)
+        return False
+    now = datetime.utcnow()
+    job.status = status
+    job.updated_at = now
+    job.finished_at = now
+    job.lease_expires_at = None
+    job.worker_id = None
+    if error_message:
+        job.error_message = error_message
+    db.session.commit()
+    return True
+
+
+def process_job_async(job_id, worker_id=None):
+    """Process a durable job and return its HTTP-compatible outcome."""
     with app.app_context():
         job = None
         try:
-            job = Job.query.filter_by(job_id=job_id).first()
+            query = Job.query.filter_by(job_id=job_id)
+            if worker_id:
+                query = query.filter(Job.worker_id == worker_id)
+            job = query.first()
             if not job:
                 logging.error(f"Job {job_id} not found")
-                return
-            
-            job.update_status('processing')
+                return {'payload': {'success': False, 'error': 'Job not found'}, 'status_code': 404}
+            if worker_id and job.worker_id != worker_id:
+                return {'payload': {'success': False, 'error': 'Job lease is no longer owned by this worker'}, 'status_code': 409}
+
+            if not worker_id:
+                job.update_status('processing')
             input_data = job.get_input_data()
-            
-            if job.job_type == 'merge_image_audio':
+
+            if input_data and input_data.get('_queued_endpoint'):
+                result = _execute_queued_media_request(job, input_data)
+            elif job.job_type == 'merge_image_audio':
                 result = process_merge_image_audio_job(job, input_data)
             elif job.job_type == 'merge_videos':
                 result = process_merge_videos_job(job, input_data)
@@ -4500,33 +4940,40 @@ def process_job_async(job_id):
             elif job.job_type == 'compress_video':
                 result = process_compress_video_job(job, input_data)
             else:
-                safe_update_job_status_by_id(job_id, 'failed', f'Unknown job type: {job.job_type}')
-                return
-            
-            if result['success']:
-                # Try to set result data safely, but mark as completed even if this fails
-                result_data_success = safe_set_result_data(job_id, result)
-                if result_data_success:
-                    safe_update_job_status_by_id(job_id, 'completed')
-                else:
-                    # Job succeeded but couldn't save result data - still mark as completed
-                    logging.warning(f"Job {job_id} completed successfully but couldn't save result data due to DB issues")
-                    safe_update_job_status_by_id(job_id, 'completed')
+                result = {'success': False, 'error': f'Unknown job type: {job.job_type}', '_http_status': 500}
+
+            status_code = int(result.pop('_http_status', 200 if result.get('success') else 500))
+            public_result = dict(result)
+            if public_result.get('success'):
+                safe_set_result_data(job_id, public_result, worker_id=worker_id)
+                _finalize_job(job_id, 'completed', worker_id=worker_id)
             else:
-                safe_update_job_status_by_id(job_id, 'failed', result.get('error', 'Unknown error'))
-                
+                _finalize_job(
+                    job_id,
+                    'failed',
+                    worker_id=worker_id,
+                    error_message=public_result.get('error', 'Unknown error'),
+                )
+            return {'payload': public_result, 'status_code': status_code}
+
         except (OperationalError, PendingRollbackError) as db_error:
             logging.error(f"Database error processing job {job_id}: {str(db_error)}")
-            # Roll back the session due to database connection issues
             db.session.rollback()
-            # Try to update job status with a fresh transaction
-            safe_update_job_status_by_id(job_id, 'failed', f'Database connection error: {str(db_error)}')
+            error = f'Database connection error: {str(db_error)}'
+            try:
+                _finalize_job(job_id, 'failed', worker_id=worker_id, error_message=error)
+            except Exception:
+                logging.exception('Could not persist database failure for job %s', job_id)
+            return {'payload': {'success': False, 'error': error}, 'status_code': 500}
         except Exception as e:
             logging.error(f"Error processing job {job_id}: {str(e)}")
-            safe_update_job_status_by_id(job_id, 'failed', str(e))
+            db.session.rollback()
+            try:
+                _finalize_job(job_id, 'failed', worker_id=worker_id, error_message=str(e))
+            except Exception:
+                logging.exception('Could not persist failure for job %s', job_id)
+            return {'payload': {'success': False, 'error': str(e)}, 'status_code': 500}
         finally:
-            # Always release the database connection back to the pool
-            # This is critical for background threads to prevent pool exhaustion
             db.session.remove()
 
 def process_merge_image_audio_job(job, input_data):
@@ -5680,8 +6127,21 @@ def get_job_status(job_id):
             'job_type': job.job_type,
             'status': job.status,
             'created_at': job.created_at.isoformat(),
-            'updated_at': job.updated_at.isoformat()
+            'updated_at': job.updated_at.isoformat(),
+            'started_at': job.started_at.isoformat() if job.started_at else None,
+            'finished_at': job.finished_at.isoformat() if job.finished_at else None,
+            'attempt_count': int(job.attempt_count or 0),
         }
+
+        if job.status == 'pending':
+            earlier = Job.query.filter(
+                Job.status == 'pending',
+                or_(
+                    Job.created_at < job.created_at,
+                    and_(Job.created_at == job.created_at, Job.id < job.id),
+                ),
+            ).count()
+            response_data['queue_position'] = earlier + 1
         
         if job.status == 'completed':
             result_data = job.get_result_data()
@@ -5706,6 +6166,7 @@ def get_job_status(job_id):
 @app.route('/api/split_audio', methods=['POST'])
 @log_api_request
 @require_api_key
+@queue_media_job('split_audio')
 def split_audio():
     """API endpoint to split audio into equal parts (sync/async)"""
     # Log full request details for debugging
@@ -5738,9 +6199,7 @@ def split_audio():
             db.session.commit()
             
             # Start background processing
-            thread = threading.Thread(target=process_job_async, args=(job.job_id,))
-            thread.daemon = True
-            thread.start()
+            _get_media_job_queue().wake()
             
             return jsonify({
                 'success': True,
@@ -5854,6 +6313,7 @@ def split_audio():
 @app.route('/api/split_audio_segments', methods=['POST'])
 @log_api_request
 @require_api_key
+@queue_media_job('split_audio_segments')
 def split_audio_segments():
     """API endpoint to split audio by segment duration (sync/async)"""
     # Log full request details for debugging
@@ -5886,9 +6346,7 @@ def split_audio_segments():
             db.session.commit()
             
             # Start background processing
-            thread = threading.Thread(target=process_job_async, args=(job.job_id,))
-            thread.daemon = True
-            thread.start()
+            _get_media_job_queue().wake()
             
             return jsonify({
                 'success': True,
@@ -6003,6 +6461,7 @@ def split_audio_segments():
 @app.route('/api/split_audio_time', methods=['POST'])
 @log_api_request
 @require_api_key
+@queue_media_job('split_audio_time')
 def split_audio_time():
     """API endpoint to split audio by start and end time in milliseconds (sync/async)"""
     api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
@@ -6029,9 +6488,7 @@ def split_audio_time():
             db.session.add(job)
             db.session.commit()
             
-            thread = threading.Thread(target=process_job_async, args=(job.job_id,))
-            thread.daemon = True
-            thread.start()
+            _get_media_job_queue().wake()
             
             return jsonify({
                 'success': True,
@@ -6315,6 +6772,7 @@ def trim_audio_with_ffmpeg(audio_path, output_path, desired_length, fade_duratio
 @app.route('/api/add_subtitles', methods=['POST'])
 @log_api_request
 @require_api_key
+@queue_media_job('add_subtitles')
 def add_subtitles():
     """API endpoint to add subtitles to video"""
     # Log full request details for debugging
@@ -6347,9 +6805,7 @@ def add_subtitles():
             db.session.commit()
             
             # Start background processing
-            from threading import Thread
-            thread = Thread(target=process_job_async, args=(job.job_id,))
-            thread.start()
+            _get_media_job_queue().wake()
             
             return jsonify({
                 'success': True,
@@ -6469,6 +6925,7 @@ def add_subtitles():
 @app.route('/api/trim_audio', methods=['POST'])
 @log_api_request
 @require_api_key
+@queue_media_job('trim_audio')
 def trim_audio():
     """API endpoint to trim audio to desired length"""
     # Log full request details for debugging
@@ -6813,6 +7270,7 @@ def split_video_with_ffmpeg(video_path, output_part1, output_part2, split_at_sec
 @app.route('/api/trim_video', methods=['POST'])
 @log_api_request
 @require_api_key
+@queue_media_job('trim_video')
 def trim_video():
     """API endpoint to trim video based on start and end time"""
     api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
@@ -6962,6 +7420,7 @@ def trim_video():
 @app.route('/api/split_video', methods=['POST'])
 @log_api_request
 @require_api_key
+@queue_media_job('split_video')
 def split_video():
     """API endpoint to split a video into two parts at a given time (default: half)."""
     api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
@@ -7074,6 +7533,7 @@ def split_video():
 @app.route('/api/video_loop', methods=['POST'])
 @log_api_request
 @require_api_key
+@queue_media_job('video_loop')
 def video_loop():
     """API endpoint to loop a single video a specified number of times or to match an audio track length."""
     api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
@@ -7315,6 +7775,7 @@ def video_loop():
 @app.route('/api/endless_loop', methods=['POST'])
 @log_api_request
 @require_api_key
+@queue_media_job('endless_loop')
 def endless_loop():
     """API endpoint to loop one video until an exact target duration is reached."""
     api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
@@ -7474,6 +7935,7 @@ def endless_loop():
 @app.route('/api/get_first_frame_image', methods=['POST'])
 @log_api_request
 @require_api_key
+@queue_media_job('get_first_frame_image')
 def get_first_frame_image():
     """API endpoint to extract the first frame of a video and return the image URL."""
     api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
@@ -7548,6 +8010,7 @@ def get_first_frame_image():
 @app.route('/api/get_last_frame_image', methods=['POST'])
 @log_api_request
 @require_api_key
+@queue_media_job('get_last_frame_image')
 def get_last_frame_image():
     """API endpoint to extract the last frame of a video and return the image URL."""
     api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
@@ -8029,9 +8492,7 @@ def _submit_compress_video_job(validated, api_key, message=None, detected_size_b
     db.session.add(job)
     db.session.commit()
 
-    thread = threading.Thread(target=process_job_async, args=(job.job_id,))
-    thread.daemon = True
-    thread.start()
+    _get_media_job_queue().wake()
 
     response_payload = {
         'success': True,
@@ -8048,6 +8509,7 @@ def _submit_compress_video_job(validated, api_key, message=None, detected_size_b
 @app.route('/api/compress_video', methods=['POST'])
 @log_api_request
 @require_api_key
+@queue_media_job('compress_video')
 def compress_video():
     """Compress a video with CRF or best-effort target-size settings."""
     api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
@@ -8074,7 +8536,11 @@ def compress_video():
         if validated.get('async'):
             return _submit_compress_video_job(validated, api_key, detected_size_bytes=detected_size_bytes)
 
-        if detected_size_bytes is not None and detected_size_bytes > COMPRESS_VIDEO_SYNC_MAX_BYTES:
+        if (
+            detected_size_bytes is not None
+            and detected_size_bytes > COMPRESS_VIDEO_SYNC_MAX_BYTES
+            and not getattr(g, 'inside_media_job', False)
+        ):
             validated['async'] = True
             return _submit_compress_video_job(
                 validated,
@@ -8115,6 +8581,7 @@ def compress_video():
 @app.route('/api/extract_audio_mp3', methods=['POST'])
 @log_api_request
 @require_api_key
+@queue_media_job('extract_audio_mp3')
 def extract_audio_mp3():
     """API: download video from URL and extract audio as MP3."""
     api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
@@ -8194,6 +8661,7 @@ def extract_audio_mp3():
 @app.route('/api/convert_video_to_gif', methods=['POST'])
 @log_api_request
 @require_api_key
+@queue_media_job('convert_video_to_gif')
 def convert_video_to_gif():
     """API: download video from URL, encode to GIF; optional chromakey-based transparency."""
     api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
@@ -8310,6 +8778,7 @@ def convert_video_to_gif():
 @app.route('/api/convert_to_vertical', methods=['POST'])
 @log_api_request
 @require_api_key
+@queue_media_job('convert_to_vertical')
 def convert_to_vertical():
     """API endpoint to convert horizontal videos to vertical format (sync/async)"""
     # Log full request details for debugging
@@ -8354,8 +8823,7 @@ def convert_to_vertical():
             db.session.commit()
             
             # Start background processing
-            thread = threading.Thread(target=process_job_async, args=(job.job_id,))
-            thread.start()
+            _get_media_job_queue().wake()
             
             status_url = url_for('get_job_status', job_id=job.job_id, _external=True)
             
@@ -8466,6 +8934,7 @@ def convert_to_vertical():
 @app.route('/api/convert_to_tiktok_portrait', methods=['POST'])
 @log_api_request
 @require_api_key
+@queue_media_job('convert_to_tiktok_portrait')
 def convert_to_tiktok_portrait():
     """API endpoint to convert landscape videos to TikTok-style 9:16 portrait (crop, no black bars)"""
     api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
@@ -8504,8 +8973,7 @@ def convert_to_tiktok_portrait():
             db.session.add(job)
             db.session.commit()
             
-            thread = threading.Thread(target=process_job_async, args=(job.job_id,))
-            thread.start()
+            _get_media_job_queue().wake()
             
             status_url = url_for('get_job_status', job_id=job.job_id, _external=True)
             
@@ -8791,6 +9259,7 @@ def generate_vtt_from_words(words, max_chars=40, max_words_per_segment=8):
 @app.route('/api/videos/add-tiktok-captions', methods=['POST'])
 @log_api_request
 @require_api_key
+@queue_media_job('add_tiktok_captions')
 def add_tiktok_captions():
     """Auto-caption endpoint: extract audio, transcribe with Whisper, render TikTok-style captions."""
     request_id = str(uuid.uuid4())
@@ -8904,7 +9373,7 @@ def add_tiktok_captions():
 
         try:
             result = subprocess.run(
-                ['npx', 'tsx', 'server/render-tiktok-captions.ts'],
+                ['npx', '--no-install', 'tsx', 'server/render-tiktok-captions.ts'],
                 input=render_input,
                 capture_output=True,
                 text=True,
@@ -8990,6 +9459,7 @@ def add_tiktok_captions():
 @app.route('/api/videos/add-text-overlay-captions', methods=['POST'])
 @log_api_request
 @require_api_key
+@queue_media_job('add_text_overlay_captions')
 def add_text_overlay_captions():
     """Text overlay caption endpoint: display user-provided text lines over video, one line every N seconds."""
     request_id = str(uuid.uuid4())
@@ -9040,7 +9510,7 @@ def add_text_overlay_captions():
 
         try:
             result = subprocess.run(
-                ['npx', 'tsx', 'server/render-tiktok-captions.ts'],
+                ['npx', '--no-install', 'tsx', 'server/render-tiktok-captions.ts'],
                 input=render_input,
                 capture_output=True,
                 text=True,
@@ -9426,5 +9896,10 @@ def cleanup_old_videos():
     })
 
 
+if _IS_PRODUCTION:
+    _get_media_job_queue().wake()
+
+
 if __name__ == '__main__':
+    _get_media_job_queue().wake()
     app.run(host="0.0.0.0", port=5000, debug=True)

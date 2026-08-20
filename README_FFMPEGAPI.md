@@ -110,6 +110,7 @@ curl -X POST "https://ffmpegapi.net/api/merge_image_audio" \
   "success": true,
   "job_id": "job_xyz789",
   "status": "pending",
+  "queue_position": 1,
   "message": "Job submitted for async processing",
   "status_url": "https://ffmpegapi.net/api/job/job_xyz789/status"
 }
@@ -792,6 +793,19 @@ while True:
     
     time.sleep(5)  # Wait 5 seconds before checking again
 ```
+
+---
+
+## Railway Deployment
+
+Mount a Railway volume at `/data` and configure both paths so queued multipart inputs and completed outputs survive restarts and rolling deployments:
+
+```text
+UPLOAD_FOLDER=/data/uploads
+OUTPUT_FOLDER=/data/outputs
+```
+
+The container runs one Gunicorn process with four web threads. Local FFmpeg and Remotion work is separately bounded by the admin **Concurrent Jobs** setting (default `2`, range `1`–`8`). After deployment, submit at least three controlled jobs and confirm two are processing, one remains pending, and memory reaches a stable plateau before choosing a Railway memory limit.
 
 ---
 

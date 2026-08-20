@@ -15,7 +15,7 @@ X-API-Key: your_api_key_here
 
 ## Asynchronous Processing
 
-Many long-running endpoints accept `async: true`. The response includes `job_id`, `status`, and `status_url`. Poll `GET /api/job/{job_id}/status` until the status is `completed` or `failed`.
+All locally processed FFmpeg and Remotion endpoints accept `async: true`. They can also return HTTP 202 when all configured processing slots are occupied. The response includes `job_id`, `status`, `queue_position`, and `status_url`; poll the status endpoint until the job is completed or failed.
 
 ## Endpoints
 
@@ -715,7 +715,7 @@ Typical successful response fields include `success`, `message`, `download_url`,
 
 `GET /api/job/{job_id}/status`
 
-Returns pending, processing, completed, or failed status for a background job submitted with async=true.
+Returns pending, processing, completed, or failed status for an explicitly asynchronous or automatically queued job. Pending responses include `queue_position`.
 
 Content type: `query string or X-API-Key header`
 

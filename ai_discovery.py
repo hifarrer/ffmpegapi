@@ -511,6 +511,23 @@ ENDPOINTS = [
     },
 ]
 
+# Every endpoint that performs local FFmpeg or Remotion work participates in the
+# bounded queue. The YouTube endpoint delegates processing externally and is excluded.
+for _endpoint in ENDPOINTS:
+    if (
+        _endpoint["method"] == "POST"
+        and _endpoint["path"] != "/api/youtube_to_mp4"
+        and not any(parameter["name"] == "async" for parameter in _endpoint["parameters"])
+    ):
+        _endpoint["parameters"].append({
+            "name": "async",
+            "type": "boolean",
+            "required": False,
+            "description": "Return a job_id immediately. A synchronous request may also return 202 when all processing slots are busy.",
+        })
+        if isinstance(_endpoint.get("example"), dict):
+            _endpoint["example"].setdefault("async", False)
+
 
 AGENT_POSITIONING = (
     "Hosted FFmpeg API alternative for agents that need video and audio processing "
@@ -770,7 +787,8 @@ def _async_example(endpoint):
         "success": True,
         "job_id": "job_abc123",
         "status": "pending",
-        "message": "Job submitted for async processing. Use /api/job/{job_id}/status to check progress.",
+        "queue_position": 1,
+        "message": "Job queued for processing. Use the status URL to check progress.",
         "status_url": f"{SITE_URL}/api/job/job_abc123/status",
     }
 
@@ -952,6 +970,7 @@ def _schema_components():
                 "success": {"type": "boolean", "const": True},
                 "job_id": {"type": "string", "examples": ["job_abc123"]},
                 "status": {"type": "string", "enum": ["pending", "processing", "completed", "failed"]},
+                "queue_position": {"type": ["integer", "null"], "minimum": 1},
                 "message": {"type": "string"},
                 "status_url": url,
             },
@@ -967,6 +986,10 @@ def _schema_components():
                 "status": {"type": "string", "enum": ["pending", "processing", "completed", "failed"]},
                 "created_at": {"type": "string", "format": "date-time"},
                 "updated_at": {"type": "string", "format": "date-time"},
+                "started_at": {"type": ["string", "null"], "format": "date-time"},
+                "finished_at": {"type": ["string", "null"], "format": "date-time"},
+                "attempt_count": {"type": "integer", "minimum": 0},
+                "queue_position": {"type": "integer", "minimum": 1},
                 "download_url": url,
                 "result_url": url,
                 "filename": filename,
@@ -1202,7 +1225,7 @@ def generate_docs_markdown(full=False):
         "",
         "## Asynchronous Processing",
         "",
-        "Many long-running endpoints accept `async: true`. The response includes `job_id`, `status`, and `status_url`. Poll `GET /api/job/{job_id}/status` until the status is `completed` or `failed`.",
+        "All locally processed FFmpeg and Remotion endpoints accept `async: true`. They may also return HTTP 202 with `job_id`, `status`, `queue_position`, and `status_url` when all processing slots are busy. Poll `GET /api/job/{job_id}/status` until the status is `completed` or `failed`.",
         "",
         "## Agent Discovery",
         "",

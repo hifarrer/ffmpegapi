@@ -21,9 +21,9 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
     'pool_pre_ping': True,
     "pool_recycle": 300,
-    "pool_size": 20,  # Increased for concurrent video processing
-    "max_overflow": 40,  # Increased for burst traffic
-    "pool_timeout": 120,  # Increased to handle connection pool exhaustion
+    "pool_size": 6,
+    "max_overflow": 4,
+    "pool_timeout": 30,
 }
 
 # Initialize extensions

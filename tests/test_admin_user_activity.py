@@ -6,7 +6,7 @@ from flask import Flask
 from flask_login import LoginManager
 
 from admin_routes import admin_bp
-from models import ApiKey, ApiLog, SubscriptionPlan, User, UserSubscription, db
+from models import ApiKey, ApiLog, SiteSettings, SubscriptionPlan, User, UserSubscription, db
 
 
 @pytest.fixture()
@@ -68,6 +68,27 @@ def app():
 def log_in_admin(client):
     with client.session_transaction() as browser_session:
         browser_session['admin_authenticated'] = True
+
+
+def test_site_settings_validates_concurrent_jobs_range(app):
+    client = app.test_client()
+    log_in_admin(client)
+
+    response = client.post('/admin/settings', data={
+        'site_name': 'FFmpeg API',
+        'concurrent_jobs': '8',
+    })
+    assert response.status_code == 200
+    with app.app_context():
+        assert SiteSettings.get_settings().concurrent_jobs == 8
+
+    response = client.post('/admin/settings', data={
+        'site_name': 'FFmpeg API',
+        'concurrent_jobs': '9',
+    })
+    assert response.status_code == 302
+    with app.app_context():
+        assert SiteSettings.get_settings().concurrent_jobs == 8
 
 
 def test_user_management_shows_joined_and_latest_key_usage(app):

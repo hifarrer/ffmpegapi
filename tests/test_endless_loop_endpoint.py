@@ -20,6 +20,8 @@ class EndlessLoopEndpointTests(unittest.TestCase):
 
         with app.app_context():
             db.create_all()
+            Job.query.delete()
+            db.session.commit()
             plan = SubscriptionPlan.query.filter_by(name="Endless Loop Test").first()
             if not plan:
                 plan = SubscriptionPlan(

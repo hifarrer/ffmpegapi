@@ -5,7 +5,8 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from functools import wraps
 import logging
 from datetime import datetime, timedelta
-from models import User, ApiKey, SubscriptionPlan, StripeSettings, UserSubscription, SiteSettings, ApiLog, db
+from sqlalchemy import or_
+from models import User, ApiKey, SubscriptionPlan, StripeSettings, UserSubscription, SiteSettings, Job, ApiLog, db
 import os
 
 admin_bp = Blueprint('admin', __name__, url_prefix='/admin')
@@ -430,10 +431,17 @@ def site_settings():
             allowed_extensions = request.form.get('allowed_extensions', '').strip()
             support_email = request.form.get('support_email', '').strip()
             maintenance_mode = request.form.get('maintenance_mode') == 'on'
+            try:
+                concurrent_jobs = int(request.form.get('concurrent_jobs', '2'))
+            except (TypeError, ValueError):
+                concurrent_jobs = 0
             
             # Validate required fields
             if not site_name:
                 flash('Site name is required', 'danger')
+                return redirect(url_for('admin.site_settings'))
+            if concurrent_jobs < 1 or concurrent_jobs > 8:
+                flash('Concurrent jobs must be between 1 and 8', 'danger')
                 return redirect(url_for('admin.site_settings'))
             
             # Update settings
@@ -443,8 +451,15 @@ def site_settings():
                 max_file_size=max_file_size,
                 allowed_extensions=allowed_extensions,
                 support_email=support_email,
-                maintenance_mode=maintenance_mode
+                maintenance_mode=maintenance_mode,
+                concurrent_jobs=concurrent_jobs,
             )
+
+            # The queue reads the database setting transactionally; waking it applies
+            # increases immediately without interrupting already-running work.
+            queue_manager = current_app.extensions.get('media_job_queue')
+            if queue_manager is not None:
+                queue_manager.wake()
             
             flash('Settings updated successfully', 'success')
             
@@ -454,8 +469,15 @@ def site_settings():
     
     # Load current settings from database
     settings = SiteSettings.get_settings()
-    
-    return render_template('admin/settings.html', settings=settings)
+    queue_counts = {
+        'pending': Job.query.filter_by(status='pending').count(),
+        'running': Job.query.filter(
+            Job.status == 'processing',
+            or_(Job.lease_expires_at.is_(None), Job.lease_expires_at > datetime.utcnow()),
+        ).count(),
+    }
+
+    return render_template('admin/settings.html', settings=settings, queue_counts=queue_counts)
 
 @admin_bp.route('/change-password', methods=['GET', 'POST'])
 @admin_required
@@ -501,7 +523,14 @@ def analytics():
             'daily_requests': {
                 'labels': ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
                 'data': [120, 150, 180, 140, 160, 200, 175]  # Sample data
-            }
+            },
+            'queue': {
+                'pending': Job.query.filter_by(status='pending').count(),
+                'running': Job.query.filter(
+                    Job.status == 'processing',
+                    or_(Job.lease_expires_at.is_(None), Job.lease_expires_at > datetime.utcnow()),
+                ).count(),
+            },
         }
         
         return render_template('admin/analytics.html', analytics=analytics_data)

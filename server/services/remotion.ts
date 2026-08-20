@@ -63,10 +63,27 @@ const getServeUrl = async (): Promise<string> => {
     return cachedServeUrl;
   }
 
+  const configuredBundle = process.env.REMOTION_BUNDLE_PATH;
+  const bundledPath = configuredBundle
+    ? path.resolve(configuredBundle)
+    : path.resolve(__dirname, "../../dist/remotion");
+  if (fs.existsSync(bundledPath)) {
+    cachedServeUrl = bundledPath;
+    return cachedServeUrl;
+  }
+
   const entryPoint = path.resolve(__dirname, "../remotion/Root.tsx");
   cachedServeUrl = await bundle(entryPoint);
   return cachedServeUrl;
 };
+
+const LOW_MEMORY_RENDER_OPTIONS = {
+  concurrency: 1,
+  disallowParallelEncoding: true,
+  offthreadVideoThreads: 1,
+  mediaCacheSizeInBytes: 64 * 1024 * 1024,
+  offthreadVideoCacheSizeInBytes: 64 * 1024 * 1024,
+} as const;
 
 export const renderVideoWithTikTokCaptions = async ({
   videoSrc,
@@ -127,6 +144,7 @@ export const renderVideoWithTikTokCaptions = async ({
   });
 
   await renderMedia({
+    ...LOW_MEMORY_RENDER_OPTIONS,
     serveUrl,
     codec: "h264",
     composition: {
@@ -214,6 +232,7 @@ export const renderVideoWithAutoCaption = async ({
   });
 
   await renderMedia({
+    ...LOW_MEMORY_RENDER_OPTIONS,
     serveUrl,
     codec: "h264",
     composition: {
@@ -294,6 +313,7 @@ export const renderVideoWithTextOverlay = async ({
   });
 
   await renderMedia({
+    ...LOW_MEMORY_RENDER_OPTIONS,
     serveUrl,
     codec: "h264",
     composition: {

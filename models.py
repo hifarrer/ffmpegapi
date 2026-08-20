@@ -216,6 +216,7 @@ class SiteSettings(db.Model):
     max_file_size = db.Column(db.String(20), default='100MB')
     allowed_extensions = db.Column(db.String(200), default='mp4,avi,mov,mkv,jpg,jpeg,png,mp3,wav,m4a')
     maintenance_mode = db.Column(db.Boolean, default=False)
+    concurrent_jobs = db.Column(db.Integer, nullable=False, default=2)
     support_email = db.Column(db.String(100), default='support@example.com')
     admin_username = db.Column(db.String(50), default='admin')
     admin_password_hash = db.Column(db.String(256))
@@ -317,6 +318,9 @@ class BlogArticle(db.Model):
 
 class Job(db.Model):
     __tablename__ = 'jobs'
+    __table_args__ = (
+        db.Index('ix_jobs_status_created_at', 'status', 'created_at', 'id'),
+    )
     
     id = db.Column(db.Integer, primary_key=True)
     job_id = db.Column(db.String(36), unique=True, nullable=False, default=lambda: str(uuid.uuid4()))
@@ -328,6 +332,11 @@ class Job(db.Model):
     error_message = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    started_at = db.Column(db.DateTime)
+    finished_at = db.Column(db.DateTime)
+    worker_id = db.Column(db.String(128), index=True)
+    lease_expires_at = db.Column(db.DateTime, index=True)
+    attempt_count = db.Column(db.Integer, nullable=False, default=0)
     
     # Relationships
     user = db.relationship('User', backref='jobs')
