@@ -2,11 +2,14 @@ from flask import Blueprint, render_template, request, redirect, url_for, flash,
 from flask_login import login_required, current_user
 from flask_wtf.csrf import generate_csrf, validate_csrf
 from werkzeug.security import check_password_hash, generate_password_hash
+from email_validator import EmailNotValidError, validate_email
 from functools import wraps
 import logging
 from datetime import datetime, timedelta
 from sqlalchemy import or_
+import stripe
 from models import User, ApiKey, SubscriptionPlan, StripeSettings, UserSubscription, SiteSettings, Job, ApiLog, db
+from stripe_routes import get_stripe_config, get_subscription_period, get_verified_subscription_plan
 import os
 
 admin_bp = Blueprint('admin', __name__, url_prefix='/admin')
@@ -39,6 +42,11 @@ def _subscription_sort_key(subscription):
     return (subscription.updated_at or subscription.created_at or datetime.min, subscription.id or 0)
 
 
+def _latest_subscription_for_user(user_id):
+    subscriptions = UserSubscription.query.filter_by(user_id=user_id).all()
+    return max(subscriptions, key=_subscription_sort_key) if subscriptions else None
+
+
 def _effective_subscription_for_user(user_id):
     subscriptions = UserSubscription.query.filter_by(user_id=user_id).all()
     entitled = [
@@ -55,6 +63,42 @@ def _effective_subscription_for_user(user_id):
         )
     ]
     return max(entitled, key=_subscription_sort_key) if entitled else None
+
+
+class AdminUserEditError(ValueError):
+    """A user-facing validation error for admin account edits."""
+
+
+def _validate_stripe_reference(value, prefix, label):
+    if not value:
+        return
+    if len(value) > 255 or not value.startswith(prefix) or len(value) == len(prefix):
+        raise AdminUserEditError(f'{label} must be a valid {prefix}… identifier.')
+
+
+def _stripe_object_id(value):
+    if hasattr(value, 'get'):
+        value = value.get('id')
+    return str(value or '').strip()
+
+
+def _retrieve_stripe_customer(customer_id):
+    try:
+        customer = stripe.Customer.retrieve(customer_id)
+    except Exception as exc:
+        logging.warning('Unable to verify Stripe customer %s: %s', customer_id, exc)
+        raise AdminUserEditError('Stripe could not verify that customer ID.') from exc
+    if customer.get('deleted'):
+        raise AdminUserEditError('That Stripe customer has been deleted.')
+    return customer
+
+
+def _retrieve_stripe_subscription(subscription_id):
+    try:
+        return stripe.Subscription.retrieve(subscription_id)
+    except Exception as exc:
+        logging.warning('Unable to verify Stripe subscription %s: %s', subscription_id, exc)
+        raise AdminUserEditError('Stripe could not verify that subscription ID.') from exc
 
 def admin_required(f):
     """Decorator to require admin authentication"""
@@ -194,6 +238,15 @@ def user_management():
             for user in users.items
         }
         user_ids = [user.id for user in users.items]
+        stored_subscriptions = {}
+        if user_ids:
+            for stored_subscription in UserSubscription.query.filter(
+                UserSubscription.user_id.in_(user_ids)
+            ).all():
+                current = stored_subscriptions.get(stored_subscription.user_id)
+                if current is None or _subscription_sort_key(stored_subscription) > _subscription_sort_key(current):
+                    stored_subscriptions[stored_subscription.user_id] = stored_subscription
+
         last_used_by_user = {}
         if user_ids:
             last_used_by_user = dict(
@@ -205,6 +258,7 @@ def user_management():
 
         return render_template('admin/users.html', users=users, plans=plans,
                              effective_subscriptions=effective_subscriptions,
+                             stored_subscriptions=stored_subscriptions,
                              last_used_by_user=last_used_by_user,
                              username_filter=username_filter,
                              email_filter=email_filter,
@@ -214,6 +268,7 @@ def user_management():
         logging.error(f"Error loading user management: {str(e)}")
         flash('Error loading user data', 'danger')
         return render_template('admin/users.html', users=None, plans=[], effective_subscriptions={},
+                             stored_subscriptions={},
                              last_used_by_user={},
                              username_filter='', email_filter='', plan_filter='')
 
@@ -241,6 +296,151 @@ def user_detail(user_id):
         last_used=last_used,
         recent_logs=recent_logs,
     )
+
+@admin_bp.route('/users/<int:user_id>/edit', methods=['POST'])
+@admin_required
+def edit_user(user_id):
+    """Edit a user's account fields and verified local Stripe links."""
+    user = User.query.get_or_404(user_id)
+    stored_subscription = _latest_subscription_for_user(user.id)
+
+    username = request.form.get('username', '').strip()
+    raw_email = request.form.get('email', '').strip()
+    customer_id = request.form.get('stripe_customer_id', '').strip()
+    subscription_id = request.form.get('stripe_subscription_id', '').strip()
+
+    try:
+        if not 4 <= len(username) <= 80:
+            raise AdminUserEditError('Username must be between 4 and 80 characters.')
+        if len(raw_email) > 120:
+            raise AdminUserEditError('Email address must be 120 characters or fewer.')
+        try:
+            email = validate_email(raw_email, check_deliverability=False).normalized.lower()
+        except EmailNotValidError as exc:
+            raise AdminUserEditError('Please enter a valid email address.') from exc
+
+        username_conflict = User.query.filter(
+            User.id != user.id,
+            db.func.lower(User.username) == username.lower(),
+        ).first()
+        if username_conflict:
+            raise AdminUserEditError('That username is already in use.')
+
+        email_conflict = User.query.filter(
+            User.id != user.id,
+            db.func.lower(User.email) == email.lower(),
+        ).first()
+        if email_conflict:
+            raise AdminUserEditError('That email address is already in use.')
+
+        _validate_stripe_reference(customer_id, 'cus_', 'Stripe customer ID')
+        _validate_stripe_reference(subscription_id, 'sub_', 'Stripe subscription ID')
+
+        current_customer_id = stored_subscription.stripe_customer_id if stored_subscription else ''
+        current_subscription_id = stored_subscription.stripe_subscription_id if stored_subscription else ''
+        stripe_changed = (
+            customer_id != (current_customer_id or '')
+            or subscription_id != (current_subscription_id or '')
+        )
+
+        verified_subscription = None
+        verified_plan = None
+        verified_billing_cycle = None
+        verified_period_start = None
+        verified_period_end = None
+        canonical_customer_id = customer_id
+
+        if stripe_changed:
+            subscription_conflict = None
+            if subscription_id:
+                subscription_conflict = UserSubscription.query.filter(
+                    UserSubscription.user_id != user.id,
+                    UserSubscription.stripe_subscription_id == subscription_id,
+                ).first()
+            if subscription_conflict:
+                raise AdminUserEditError('That Stripe subscription is already linked to another user.')
+
+            needs_stripe_lookup = bool(subscription_id) or (
+                bool(customer_id) and customer_id != (current_customer_id or '')
+            )
+            if needs_stripe_lookup and not get_stripe_config():
+                raise AdminUserEditError('Stripe is not configured, so these IDs cannot be verified.')
+
+            if subscription_id:
+                verified_subscription = _retrieve_stripe_subscription(subscription_id)
+                subscription_customer_id = _stripe_object_id(verified_subscription.get('customer'))
+                if not subscription_customer_id:
+                    raise AdminUserEditError('Stripe did not return a customer for that subscription.')
+                if customer_id and customer_id != subscription_customer_id:
+                    raise AdminUserEditError('The Stripe subscription belongs to a different customer.')
+                canonical_customer_id = subscription_customer_id
+                _validate_stripe_reference(canonical_customer_id, 'cus_', 'Stripe customer ID')
+                _retrieve_stripe_customer(canonical_customer_id)
+
+                verified_plan, verified_billing_cycle = get_verified_subscription_plan(verified_subscription)
+                if not verified_plan or not verified_plan.is_active:
+                    raise AdminUserEditError('The Stripe subscription uses a price that is not mapped to an active local plan.')
+                verified_period_start, verified_period_end = get_subscription_period(verified_subscription)
+            elif customer_id and customer_id != (current_customer_id or ''):
+                _retrieve_stripe_customer(customer_id)
+
+            customer_conflict = None
+            if canonical_customer_id:
+                customer_conflict = UserSubscription.query.filter(
+                    UserSubscription.user_id != user.id,
+                    UserSubscription.stripe_customer_id == canonical_customer_id,
+                ).first()
+            if customer_conflict:
+                raise AdminUserEditError('That Stripe customer is already linked to another user.')
+
+        if stripe_changed and (canonical_customer_id or subscription_id) and not stored_subscription:
+            if verified_plan:
+                stored_subscription = UserSubscription(user_id=user.id, plan_id=verified_plan.id)
+            else:
+                free_plan = SubscriptionPlan.query.filter_by(name='Free', is_active=True).first()
+                if not free_plan:
+                    raise AdminUserEditError('A Free plan is required before linking a customer to this user.')
+                stored_subscription = UserSubscription(
+                    user_id=user.id,
+                    plan_id=free_plan.id,
+                    status='active',
+                    billing_cycle='monthly',
+                    current_period_start=datetime.utcnow(),
+                    current_period_end=datetime.utcnow() + timedelta(days=30),
+                    api_calls_used=0,
+                )
+            db.session.add(stored_subscription)
+
+        user.username = username
+        user.email = email
+        user.active = request.form.get('active') == '1'
+        user.email_verified = request.form.get('email_verified') == '1'
+
+        if stripe_changed and stored_subscription:
+            previous_plan_id = stored_subscription.plan_id
+            stored_subscription.stripe_customer_id = canonical_customer_id or None
+            stored_subscription.stripe_subscription_id = subscription_id or None
+            if verified_subscription:
+                stored_subscription.plan_id = verified_plan.id
+                stored_subscription.status = str(verified_subscription.get('status') or 'incomplete')
+                stored_subscription.billing_cycle = verified_billing_cycle
+                stored_subscription.current_period_start = verified_period_start
+                stored_subscription.current_period_end = verified_period_end
+                if previous_plan_id != verified_plan.id:
+                    stored_subscription.api_calls_used = 0
+            stored_subscription.updated_at = datetime.utcnow()
+
+        db.session.commit()
+        flash(f'Successfully updated {user.username}', 'success')
+    except AdminUserEditError as exc:
+        db.session.rollback()
+        flash(str(exc), 'danger')
+    except Exception as exc:
+        logging.error('Error editing user %s: %s', user_id, exc, exc_info=True)
+        db.session.rollback()
+        flash('Error updating user', 'danger')
+
+    return redirect(url_for('admin.user_management'))
 
 @admin_bp.route('/users/<int:user_id>/toggle-status', methods=['POST'])
 @admin_required

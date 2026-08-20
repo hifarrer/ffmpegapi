@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from flask import Flask
@@ -42,6 +43,14 @@ def app():
             monthly_price=0,
             yearly_price=0,
         )
+        premium = SubscriptionPlan(
+            name='Premium',
+            api_calls_per_month=100,
+            monthly_price=10,
+            yearly_price=100,
+            stripe_monthly_price_id='price_premium_monthly',
+            stripe_yearly_price_id='price_premium_yearly',
+        )
         user = User(
             username='activity-user',
             email='activity@example.com',
@@ -49,7 +58,7 @@ def app():
             email_verified=True,
         )
         user.set_password('password')
-        db.session.add_all([plan, user])
+        db.session.add_all([plan, premium, user])
         db.session.flush()
         db.session.add(UserSubscription(
             user_id=user.id,
@@ -68,6 +77,37 @@ def app():
 def log_in_admin(client):
     with client.session_transaction() as browser_session:
         browser_session['admin_authenticated'] = True
+
+
+def edit_payload(**overrides):
+    payload = {
+        'username': 'activity-user',
+        'email': 'activity@example.com',
+        'active': '1',
+        'email_verified': '1',
+        'stripe_customer_id': '',
+        'stripe_subscription_id': '',
+    }
+    payload.update(overrides)
+    return payload
+
+
+def stripe_subscription(
+    subscription_id='sub_verified',
+    customer_id='cus_verified',
+    price_id='price_premium_monthly',
+    status='active',
+):
+    return {
+        'id': subscription_id,
+        'customer': customer_id,
+        'status': status,
+        'items': {'data': [{
+            'price': {'id': price_id},
+            'current_period_start': 1_800_000_000,
+            'current_period_end': 1_802_592_000,
+        }]},
+    }
 
 
 def test_site_settings_validates_concurrent_jobs_range(app):
@@ -89,6 +129,387 @@ def test_site_settings_validates_concurrent_jobs_range(app):
     assert response.status_code == 302
     with app.app_context():
         assert SiteSettings.get_settings().concurrent_jobs == 8
+
+
+def test_user_management_edit_modal_uses_inactive_stored_subscription(app):
+    with app.app_context():
+        subscription = UserSubscription.query.join(User).filter(
+            User.username == 'activity-user'
+        ).one()
+        subscription.status = 'canceled'
+        subscription.stripe_customer_id = 'cus_inactive'
+        subscription.stripe_subscription_id = 'sub_inactive'
+        db.session.commit()
+
+    client = app.test_client()
+    log_in_admin(client)
+    response = client.get('/admin/users')
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert 'title="Edit user"' in body
+    assert 'action="/admin/users/1/edit"' in body
+    assert 'value="cus_inactive"' in body
+    assert 'value="sub_inactive"' in body
+    assert 'status: canceled' in body
+
+
+def test_admin_can_edit_account_fields_without_changing_password(app):
+    with app.app_context():
+        user = User.query.filter_by(username='activity-user').one()
+        user_id = user.id
+        password_hash = user.password_hash
+
+    client = app.test_client()
+    log_in_admin(client)
+    with patch('admin_routes.get_stripe_config') as get_config:
+        response = client.post(
+            f'/admin/users/{user_id}/edit',
+            data=edit_payload(
+                username='renamed-user',
+                email='RENAMED@EXAMPLE.COM',
+                active=None,
+            ),
+        )
+
+    assert response.status_code == 302
+    get_config.assert_not_called()
+    with app.app_context():
+        user = db.session.get(User, user_id)
+        assert user.username == 'renamed-user'
+        assert user.email == 'renamed@example.com'
+        assert not user.active
+        assert user.email_verified
+        assert user.password_hash == password_hash
+
+
+def test_invalid_or_duplicate_identity_rolls_back_all_changes(app):
+    with app.app_context():
+        user = User.query.filter_by(username='activity-user').one()
+        user_id = user.id
+        other = User(username='duplicate-user', email='duplicate@example.com')
+        other.set_password('password')
+        db.session.add(other)
+        db.session.commit()
+
+    client = app.test_client()
+    log_in_admin(client)
+    duplicate_response = client.post(
+        f'/admin/users/{user_id}/edit',
+        data=edit_payload(
+            username='DUPLICATE-USER',
+            email='changed@example.com',
+            stripe_customer_id='cus_should_not_save',
+        ),
+        follow_redirects=True,
+    )
+    invalid_email_response = client.post(
+        f'/admin/users/{user_id}/edit',
+        data=edit_payload(email='not-an-email'),
+        follow_redirects=True,
+    )
+
+    assert b'username is already in use' in duplicate_response.data
+    assert b'valid email address' in invalid_email_response.data
+    with app.app_context():
+        user = db.session.get(User, user_id)
+        subscription = UserSubscription.query.filter_by(user_id=user_id).one()
+        assert user.username == 'activity-user'
+        assert user.email == 'activity@example.com'
+        assert subscription.stripe_customer_id is None
+
+
+def test_customer_only_link_is_verified_and_preserves_subscription_state(app):
+    with app.app_context():
+        user = User.query.filter_by(username='activity-user').one()
+        user_id = user.id
+        subscription = UserSubscription.query.filter_by(user_id=user_id).one()
+        original_plan_id = subscription.plan_id
+        subscription.api_calls_used = 4
+        db.session.commit()
+
+    client = app.test_client()
+    log_in_admin(client)
+    with patch('admin_routes.get_stripe_config', return_value=object()), \
+         patch('admin_routes.stripe.Customer.retrieve', return_value={'id': 'cus_verified'}), \
+         patch('admin_routes.stripe.Subscription.retrieve') as retrieve_subscription:
+        response = client.post(
+            f'/admin/users/{user_id}/edit',
+            data=edit_payload(stripe_customer_id='cus_verified'),
+        )
+
+    assert response.status_code == 302
+    retrieve_subscription.assert_not_called()
+    with app.app_context():
+        subscription = UserSubscription.query.filter_by(user_id=user_id).one()
+        assert subscription.stripe_customer_id == 'cus_verified'
+        assert subscription.stripe_subscription_id is None
+        assert subscription.plan_id == original_plan_id
+        assert subscription.status == 'active'
+        assert subscription.api_calls_used == 4
+
+
+def test_customer_only_link_creates_missing_free_subscription(app):
+    with app.app_context():
+        user = User(username='no-subscription', email='no-subscription@example.com')
+        user.set_password('password')
+        db.session.add(user)
+        db.session.commit()
+        user_id = user.id
+
+    client = app.test_client()
+    log_in_admin(client)
+    with patch('admin_routes.get_stripe_config', return_value=object()), \
+         patch('admin_routes.stripe.Customer.retrieve', return_value={'id': 'cus_new'}):
+        response = client.post(
+            f'/admin/users/{user_id}/edit',
+            data=edit_payload(
+                username='no-subscription',
+                email='no-subscription@example.com',
+                stripe_customer_id='cus_new',
+            ),
+        )
+
+    assert response.status_code == 302
+    with app.app_context():
+        subscription = UserSubscription.query.filter_by(user_id=user_id).one()
+        assert subscription.plan.name == 'Free'
+        assert subscription.status == 'active'
+        assert subscription.stripe_customer_id == 'cus_new'
+
+
+def test_subscription_link_syncs_verified_billing_state(app):
+    with app.app_context():
+        user = User.query.filter_by(username='activity-user').one()
+        user_id = user.id
+        subscription = UserSubscription.query.filter_by(user_id=user_id).one()
+        subscription.api_calls_used = 6
+        db.session.commit()
+
+    client = app.test_client()
+    log_in_admin(client)
+    verified_subscription = stripe_subscription(status='trialing')
+    with patch('admin_routes.get_stripe_config', return_value=object()), \
+         patch('admin_routes.stripe.Subscription.retrieve', return_value=verified_subscription), \
+         patch('admin_routes.stripe.Customer.retrieve', return_value={'id': 'cus_verified'}):
+        response = client.post(
+            f'/admin/users/{user_id}/edit',
+            data=edit_payload(stripe_subscription_id='sub_verified'),
+        )
+
+    assert response.status_code == 302
+    with app.app_context():
+        subscription = UserSubscription.query.filter_by(user_id=user_id).one()
+        assert subscription.plan.name == 'Premium'
+        assert subscription.status == 'trialing'
+        assert subscription.billing_cycle == 'monthly'
+        assert subscription.stripe_subscription_id == 'sub_verified'
+        assert subscription.stripe_customer_id == 'cus_verified'
+        assert subscription.current_period_start is not None
+        assert subscription.current_period_end is not None
+        assert subscription.api_calls_used == 0
+
+
+def test_same_plan_subscription_relink_preserves_api_usage(app):
+    with app.app_context():
+        user = User.query.filter_by(username='activity-user').one()
+        premium = SubscriptionPlan.query.filter_by(name='Premium').one()
+        subscription = UserSubscription.query.filter_by(user_id=user.id).one()
+        subscription.plan_id = premium.id
+        subscription.stripe_customer_id = 'cus_old'
+        subscription.stripe_subscription_id = 'sub_old'
+        subscription.status = 'active'
+        subscription.api_calls_used = 7
+        db.session.commit()
+        user_id = user.id
+
+    client = app.test_client()
+    log_in_admin(client)
+    with patch('admin_routes.get_stripe_config', return_value=object()), \
+         patch('admin_routes.stripe.Subscription.retrieve', return_value=stripe_subscription()), \
+         patch('admin_routes.stripe.Customer.retrieve', return_value={'id': 'cus_verified'}):
+        client.post(
+            f'/admin/users/{user_id}/edit',
+            data=edit_payload(stripe_subscription_id='sub_verified'),
+        )
+
+    with app.app_context():
+        subscription = UserSubscription.query.filter_by(user_id=user_id).one()
+        assert subscription.plan.name == 'Premium'
+        assert subscription.api_calls_used == 7
+
+
+@pytest.mark.parametrize(
+    ('customer_id', 'subscription_id', 'subscription_result', 'customer_result', 'expected_message'),
+    [
+        ('cus_wrong', 'sub_verified', stripe_subscription(), {'id': 'cus_verified'}, b'different customer'),
+        ('', 'sub_unknown', stripe_subscription(subscription_id='sub_unknown', price_id='price_unknown'), {'id': 'cus_verified'}, b'not mapped'),
+        ('cus_deleted', '', None, {'id': 'cus_deleted', 'deleted': True}, b'has been deleted'),
+    ],
+)
+def test_invalid_stripe_links_are_rejected_atomically(
+    app, customer_id, subscription_id, subscription_result, customer_result, expected_message
+):
+    with app.app_context():
+        user = User.query.filter_by(username='activity-user').one()
+        user_id = user.id
+
+    client = app.test_client()
+    log_in_admin(client)
+    with patch('admin_routes.get_stripe_config', return_value=object()), \
+         patch('admin_routes.stripe.Subscription.retrieve', return_value=subscription_result), \
+         patch('admin_routes.stripe.Customer.retrieve', return_value=customer_result):
+        response = client.post(
+            f'/admin/users/{user_id}/edit',
+            data=edit_payload(
+                username='should-roll-back',
+                stripe_customer_id=customer_id,
+                stripe_subscription_id=subscription_id,
+            ),
+            follow_redirects=True,
+        )
+
+    assert expected_message in response.data
+    with app.app_context():
+        user = db.session.get(User, user_id)
+        subscription = UserSubscription.query.filter_by(user_id=user_id).one()
+        assert user.username == 'activity-user'
+        assert subscription.stripe_customer_id is None
+        assert subscription.stripe_subscription_id is None
+
+
+def test_stripe_conflicts_and_api_failures_do_not_change_user(app):
+    with app.app_context():
+        user = User.query.filter_by(username='activity-user').one()
+        user_id = user.id
+        other = User(username='stripe-owner', email='stripe-owner@example.com')
+        other.set_password('password')
+        db.session.add(other)
+        db.session.flush()
+        free = SubscriptionPlan.query.filter_by(name='Free').one()
+        db.session.add(UserSubscription(
+            user_id=other.id,
+            plan_id=free.id,
+            stripe_customer_id='cus_taken',
+            stripe_subscription_id='sub_taken',
+        ))
+        db.session.commit()
+
+    client = app.test_client()
+    log_in_admin(client)
+    with patch('admin_routes.get_stripe_config', return_value=object()), \
+         patch('admin_routes.stripe.Customer.retrieve', return_value={'id': 'cus_taken'}):
+        customer_conflict_response = client.post(
+            f'/admin/users/{user_id}/edit',
+            data=edit_payload(username='should-roll-back', stripe_customer_id='cus_taken'),
+            follow_redirects=True,
+        )
+    subscription_conflict_response = client.post(
+        f'/admin/users/{user_id}/edit',
+        data=edit_payload(username='should-roll-back', stripe_subscription_id='sub_taken'),
+        follow_redirects=True,
+    )
+    with patch('admin_routes.get_stripe_config', return_value=object()), \
+         patch('admin_routes.stripe.Subscription.retrieve', side_effect=RuntimeError('Stripe unavailable')):
+        failure_response = client.post(
+            f'/admin/users/{user_id}/edit',
+            data=edit_payload(username='should-also-roll-back', stripe_subscription_id='sub_failure'),
+            follow_redirects=True,
+        )
+
+    assert b'customer is already linked to another user' in customer_conflict_response.data
+    assert b'subscription is already linked to another user' in subscription_conflict_response.data
+    assert b'could not verify that subscription ID' in failure_response.data
+    with app.app_context():
+        user = db.session.get(User, user_id)
+        assert user.username == 'activity-user'
+
+
+def test_stripe_format_and_configuration_errors_are_atomic(app):
+    with app.app_context():
+        user_id = User.query.filter_by(username='activity-user').one().id
+
+    client = app.test_client()
+    log_in_admin(client)
+    format_response = client.post(
+        f'/admin/users/{user_id}/edit',
+        data=edit_payload(username='should-roll-back', stripe_customer_id='not-a-customer'),
+        follow_redirects=True,
+    )
+    with patch('admin_routes.get_stripe_config', return_value=None):
+        config_response = client.post(
+            f'/admin/users/{user_id}/edit',
+            data=edit_payload(username='should-also-roll-back', stripe_customer_id='cus_unverified'),
+            follow_redirects=True,
+        )
+
+    assert b'must be a valid cus_' in format_response.data
+    assert b'Stripe is not configured' in config_response.data
+    with app.app_context():
+        user = db.session.get(User, user_id)
+        subscription = UserSubscription.query.filter_by(user_id=user_id).one()
+        assert user.username == 'activity-user'
+        assert subscription.stripe_customer_id is None
+
+
+def test_unchanged_ids_skip_stripe_and_blank_ids_unlink_locally(app):
+    with app.app_context():
+        user = User.query.filter_by(username='activity-user').one()
+        user_id = user.id
+        subscription = UserSubscription.query.filter_by(user_id=user_id).one()
+        subscription.stripe_customer_id = 'cus_existing'
+        subscription.stripe_subscription_id = 'sub_existing'
+        subscription.status = 'active'
+        subscription.api_calls_used = 5
+        original_plan_id = subscription.plan_id
+        db.session.commit()
+
+    client = app.test_client()
+    log_in_admin(client)
+    with patch('admin_routes.get_stripe_config') as get_config:
+        client.post(
+            f'/admin/users/{user_id}/edit',
+            data=edit_payload(
+                email='updated@example.com',
+                stripe_customer_id='cus_existing',
+                stripe_subscription_id='sub_existing',
+            ),
+        )
+        unlink_response = client.post(
+            f'/admin/users/{user_id}/edit',
+            data=edit_payload(email='updated@example.com'),
+        )
+
+    assert unlink_response.status_code == 302
+    get_config.assert_not_called()
+    with app.app_context():
+        subscription = UserSubscription.query.filter_by(user_id=user_id).one()
+        assert subscription.stripe_customer_id is None
+        assert subscription.stripe_subscription_id is None
+        assert subscription.plan_id == original_plan_id
+        assert subscription.status == 'active'
+        assert subscription.api_calls_used == 5
+
+
+def test_user_edit_requires_admin_and_csrf(app):
+    with app.app_context():
+        user_id = User.query.filter_by(username='activity-user').one().id
+
+    unauthenticated_response = app.test_client().post(
+        f'/admin/users/{user_id}/edit',
+        data=edit_payload(),
+    )
+    assert unauthenticated_response.status_code == 302
+    assert unauthenticated_response.headers['Location'].endswith('/admin/login')
+
+    app.config['WTF_CSRF_ENABLED'] = True
+    client = app.test_client()
+    log_in_admin(client)
+    csrf_response = client.post(
+        f'/admin/users/{user_id}/edit',
+        data=edit_payload(),
+    )
+    assert csrf_response.status_code == 400
 
 
 def test_user_management_shows_joined_and_latest_key_usage(app):
